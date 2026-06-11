@@ -1,0 +1,49 @@
+// ClothPredict.usf
+//
+// Step 1 of the substep loop. Applies external forces (gravity) and damping to a
+// LOCAL copy of velocity, then predicts a candidate position. We do NOT write
+// velocity here: in PBD/XPBD the authoritative velocity is re-derived from the
+// position change in the Finalize pass. Positions/Velocities are read-only inputs;
+// the only output is the predicted-position workspace buffer.
+
+#include "/Engine/Public/Platform.ush"
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 64
+#endif
+
+StructuredBuffer<float3>	Positions;
+StructuredBuffer<float3>	Velocities;
+StructuredBuffer<float>		InvMasses;
+RWStructuredBuffer<float3>	PredictedPositions;
+
+uint	NumParticles;
+float	SubDeltaTime;	// dt of ONE substep
+float3	Gravity;
+float	Damping;
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint Index = DispatchThreadId.x;
+	if (Index >= NumParticles)
+	{
+		return;
+	}
+
+	const float3 X = Positions[Index];
+
+	// Pinned particles never move: their predicted position == current position,
+	// which is exactly what the solver reads for neighbours.
+	if (InvMasses[Index] <= 0.0f)
+	{
+		PredictedPositions[Index] = X;
+		return;
+	}
+
+	float3 V = Velocities[Index];
+	V += Gravity * SubDeltaTime;
+	V *= saturate(1.0f - Damping * SubDeltaTime);
+
+	PredictedPositions[Index] = X + V * SubDeltaTime;
+}

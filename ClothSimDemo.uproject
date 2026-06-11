@@ -1,0 +1,19 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.7",
+	"Category": "",
+	"Description": "Real-time GPU cloth simulation from scratch (XPBD on compute shaders).",
+	"Modules": [
+		{
+			"Name": "ClothSimDemo",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "ClothSim",
+			"Enabled": true
+		}
+	]
+}

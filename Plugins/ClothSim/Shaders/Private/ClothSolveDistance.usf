@@ -1,0 +1,112 @@
+// ClothSolveDistance.usf
+//
+// Step 2: one Jacobi iteration of distance-constraint projection.
+//
+// PARALLELISM STRATEGY (the important bit):
+//   One thread per PARTICLE. The thread gathers its up-to-8 grid neighbours
+//   (4 structural: up/down/left/right, 4 shear: diagonals), computes the distance
+//   correction each implies for THIS particle, averages them, and writes the
+//   result to its own slot in the OUTPUT buffer. Because every thread writes only
+//   its own particle and reads a fixed input snapshot, there are no data races and
+//   no atomics required. The caller ping-pongs In/Out between iterations.
+//
+// This is Position Based Dynamics: we move positions to satisfy the constraint
+//   C = |pi - pj| - restLength = 0
+// directly, weighted by inverse mass. Stiffness in [0,1] scales the correction;
+// dividing by the neighbour count is Jacobi under-relaxation that keeps the
+// parallel solve stable (a per-constraint Gauss-Seidel solve would not need it,
+// and we add that in M6).
+
+#include "/Engine/Public/Platform.ush"
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 64
+#endif
+
+StructuredBuffer<float3>	PredictedIn;
+StructuredBuffer<float>		InvMasses;
+RWStructuredBuffer<float3>	PredictedOut;
+
+uint	NumParticles;
+uint	GridWidth;
+uint	GridHeight;
+float	RestStructural;	// = Spacing
+float	RestShear;		// = Spacing * sqrt(2)
+float	Stiffness;		// [0,1]
+
+// Accumulate THIS particle's share of the correction for one neighbour.
+void AccumulateNeighbour(
+	int Nx, int Ny, float Rest,
+	float Wi, float3 Pi,
+	inout float3 Correction, inout int Count)
+{
+	if (Nx < 0 || Ny < 0 || Nx >= (int)GridWidth || Ny >= (int)GridHeight)
+	{
+		return; // off the cloth edge: no constraint here
+	}
+
+	const uint J = (uint)(Ny * (int)GridWidth + Nx);
+	const float Wj = InvMasses[J];
+	const float WSum = Wi + Wj;
+	if (WSum <= 1e-8f)
+	{
+		return; // both pinned
+	}
+
+	const float3 Pj = PredictedIn[J];
+	const float3 D = Pi - Pj;
+	const float Len = length(D);
+	if (Len <= 1e-6f)
+	{
+		return; // coincident; avoid divide-by-zero
+	}
+
+	const float C = Len - Rest;                 // constraint error
+	const float3 N = D / Len;                    // gradient direction
+	Correction += -(Wi / WSum) * C * N;          // this particle's mass-weighted share
+	Count += 1;
+}
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint Index = DispatchThreadId.x;
+	if (Index >= NumParticles)
+	{
+		return;
+	}
+
+	const float Wi = InvMasses[Index];
+	const float3 Pi = PredictedIn[Index];
+
+	if (Wi <= 0.0f)
+	{
+		PredictedOut[Index] = Pi; // pinned: pass through unchanged
+		return;
+	}
+
+	const int X = (int)(Index % GridWidth);
+	const int Y = (int)(Index / GridWidth);
+
+	float3 Correction = float3(0.0f, 0.0f, 0.0f);
+	int Count = 0;
+
+	// Structural neighbours (cardinal)
+	AccumulateNeighbour(X - 1, Y,     RestStructural, Wi, Pi, Correction, Count);
+	AccumulateNeighbour(X + 1, Y,     RestStructural, Wi, Pi, Correction, Count);
+	AccumulateNeighbour(X,     Y - 1, RestStructural, Wi, Pi, Correction, Count);
+	AccumulateNeighbour(X,     Y + 1, RestStructural, Wi, Pi, Correction, Count);
+
+	// Shear neighbours (diagonal)
+	AccumulateNeighbour(X - 1, Y - 1, RestShear, Wi, Pi, Correction, Count);
+	AccumulateNeighbour(X + 1, Y - 1, RestShear, Wi, Pi, Correction, Count);
+	AccumulateNeighbour(X - 1, Y + 1, RestShear, Wi, Pi, Correction, Count);
+	AccumulateNeighbour(X + 1, Y + 1, RestShear, Wi, Pi, Correction, Count);
+
+	if (Count > 0)
+	{
+		Correction /= (float)Count; // Jacobi average -> stable parallel relaxation
+	}
+
+	PredictedOut[Index] = Pi + Stiffness * Correction;
+}
