@@ -257,6 +257,39 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	{
 		DrawDebug();
 	}
+	if (bDrawColliders)
+	{
+		DrawColliders();
+	}
+}
+
+void UClothSimComponent::DrawColliders()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	const FTransform& Xform = GetComponentTransform();
+	const FColor Color = FColor::Yellow;
+
+	for (const FClothCollider& C : Colliders)
+	{
+		if (C.Type == EClothColliderType::Sphere)
+		{
+			const FVector Center = Xform.TransformPosition(C.Center);
+			DrawDebugSphere(World, Center, C.Radius, 16, Color, false, -1.0f, SDPG_World, 0.5f);
+		}
+		else // Capsule
+		{
+			const FVector Center = Xform.TransformPosition(C.Center);
+			// UE's DrawDebugCapsule half-height is centre->tip (includes the hemisphere),
+			// while our HalfHeight is the segment half-length, so add the radius.
+			const FQuat Rot = (Xform.GetRotation() * C.Rotation.Quaternion());
+			DrawDebugCapsule(World, Center, C.HalfHeight + C.Radius, C.Radius, Rot, Color, false, -1.0f, SDPG_World, 0.5f);
+		}
+	}
 }
 
 void UClothSimComponent::ComputeGridNormalsTangents(

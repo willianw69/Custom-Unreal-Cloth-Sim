@@ -120,6 +120,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float Friction = 0.3f;
 
+	/** Draw wireframe shapes for the colliders (they are otherwise invisible math). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision")
+	bool bDrawColliders = true;
+
 	/** Substeps per frame. The biggest stability lever: more = stiffer, more stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Solver", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 Substeps = 2;
@@ -186,6 +190,9 @@ private:
 
 	/** Draw readback positions as debug points (optional). */
 	void DrawDebug();
+
+	/** Draw wireframe shapes for the authored colliders so they're visible. */
+	void DrawColliders();
 
 	int32 NumParticles = 0;
 
