@@ -19,7 +19,8 @@ public class ClothSim : ModuleRules
 		{
 			"Projects",     // IPluginManager, to locate our Shaders/ directory
 			"RenderCore",   // FGlobalShader, RDG (FRDGBuilder), FComputeShaderUtils
-			"RHI"           // FRHIGPUBufferReadback, buffer descriptors
+			"RHI",          // FRHIGPUBufferReadback, buffer descriptors
+			"Renderer"      // M6: Global Distance Field params + FXRenderingUtils accessor
 		});
 	}
 }

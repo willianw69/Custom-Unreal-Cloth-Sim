@@ -124,6 +124,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision")
 	bool bDrawColliders = true;
 
+	/**
+	 * Collide against ANY mesh in the scene using Unreal's Global Distance Field
+	 * (in addition to the explicit collider slots). Requires "Generate Mesh Distance
+	 * Fields" enabled in Project Settings and meshes that have distance fields.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision")
+	bool bUseDistanceFieldCollision = false;
+
+	/** Contact shell thickness for distance-field collision (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.0"))
+	float DistanceFieldThickness = 2.0f;
+
 	/** Substeps per frame. The biggest stability lever: more = stiffer, more stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Solver", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 Substeps = 2;

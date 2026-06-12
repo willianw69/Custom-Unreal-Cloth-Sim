@@ -52,6 +52,11 @@ struct FClothSimParams
 
 	// Collision (M5) — world-space colliders rebuilt each frame.
 	TArray<FGPUCollider> Colliders;
+	float   Friction = 0.3f;
+
+	// Distance-field collision (M6) — collide against any scene mesh via the GDF.
+	bool    bUseDistanceFieldCollision = false;
+	float   DFThickness = 2.0f; // contact shell thickness (cm)
 };
 
 /**

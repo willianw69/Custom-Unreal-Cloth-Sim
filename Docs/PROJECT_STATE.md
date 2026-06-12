@@ -1,7 +1,7 @@
 # PROJECT_STATE.md
 
 > Single source of truth for current project status. Update after every milestone.
-> Last updated: 2026-06-12 (after M5).
+> Last updated: 2026-06-12 (after M6).
 
 ## Project Overview
 Real-time **GPU cloth simulation built from scratch** in **Unreal Engine 5.7**, as a
@@ -14,7 +14,9 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
 - **Engine install:** `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-**M5 — Sphere & Capsule Collision: COMPLETE and verified in-editor.**
+**M6 — Distance Field Mesh Collision: COMPLETE and verified in-editor.**
+(M6 was reassigned from "Gauss-Seidel + bending" to distance-field collision at the user's
+request; the solver upgrade moves to M7.)
 
 ## Completed Milestones
 - **M1 — Particle Simulation.** GPU integration (gravity + damping), structured buffers,
@@ -32,12 +34,16 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
 - **M5 — Sphere & Capsule Collision.** GPU collider buffer (unified capsule = segment+radius;
   sphere = degenerate). `ClothCollision.usf` pass after the solver projects predicted positions
   out of colliders and damps tangential motion (friction). Editable collider slots + `bPinTopEdge`.
+- **M6 — Distance Field Mesh Collision.** Cloth collides with ANY scene mesh via Unreal's Global
+  Distance Field. A SceneViewExtension snapshots the GDF params + view uniform buffer each frame;
+  `ClothCollisionDF.usf` samples `GetDistanceToNearestSurfaceGlobal` + gradient to push particles
+  out of arbitrary geometry. Toggle `bUseDistanceFieldCollision`.
 
 ## In-Progress Work
 - None (between milestones).
 
 ## Next Milestone
-**M6 — Colored Gauss-Seidel + Bending.** Build an explicit constraint buffer + CPU graph coloring
+**M7 — Colored Gauss-Seidel + Bending.** Build an explicit constraint buffer + CPU graph coloring
 to run parallel Gauss-Seidel (faster convergence than the current Jacobi gather). Add
 bending/dihedral constraints so the cloth resists sharp folds.
 
@@ -46,6 +52,12 @@ bending/dihedral constraints so the cloth resists sharp folds.
   normals derived on the GPU from grid neighbours (no extra pass); sinusoidal turbulence.
 - **Collision model:** unified capsule (segment+radius); positional projection + tangential
   friction; runs as its own pass after the solver, in place on the predicted buffer (no races).
+- **Distance-field collision:** GDF accessed via `UE::FXRenderingUtils::GetGlobalDistanceFieldParameterData`
+  from a SceneViewExtension (captured in `PostRenderBasePassDeferred`, when the GDF exists). GDF
+  inputs bound via the standalone `FGlobalDistanceFieldParameters2`; the engine header transitively
+  needs the `View` UB (for `ResolvedView`), so we also snapshot `FSceneView::ViewUniformBuffer` and
+  bind it. Sampling uses translated world space (world + cached PreViewTranslation). A 1-frame lag
+  between the SVE snapshot and the (separately-enqueued) sim is harmless.
 - **Solver model:** XPBD/PBD. Velocity is derived from the position delta (stable).
 - **Parallelism:** Jacobi via **per-particle gather** of grid neighbours (no atomics, no
   races). Graph-colored Gauss-Seidel deferred to M6.
@@ -57,6 +69,10 @@ bending/dihedral constraints so the cloth resists sharp folds.
 ## Known Issues
 - Default material is **one-sided** → cloth invisible from the back. Use a Two-Sided material.
 - Rendering lags the true GPU state by ~1–2 frames (readback latency). Cosmetic only.
+- DF collision requires **Generate Mesh Distance Fields** (Project Settings) + a GDF consumer.
+  We force it via `r.DistanceFieldAO=1`/`r.AOGlobalDistanceField=1` in DefaultEngine.ini, which
+  may slightly affect scene lighting. The Global Distance Field is **coarse**, so DF collision is
+  soft/approximate on thin or small objects (great for large meshes).
 
 ## Known Limitations
 - Collision is against authored sphere/capsule slots only (no floor/world geometry, no

@@ -51,6 +51,18 @@ tangential friction, structured collider buffer.
 (one thread per particle → no races); pushes penetrating particles to the surface and damps
 tangential motion. Colliders authored as Details-panel slots, converted to world space per frame.
 
+## M6 — Distance Field Collision Against Arbitrary Meshes
+**Technical challenges:** Hooking into Unreal's renderer-owned **Global Distance Field** from a
+custom plugin — the same mechanism Niagara uses for GPU particle collision. Required a
+SceneViewExtension to snapshot the GDF at the right point in the frame, sampling in translated
+world space, and resolving a non-obvious dependency where the engine's GDF shader header
+transitively requires the View uniform buffer.
+**Technologies:** UE Global Distance Field, `FSceneViewExtension`, `FXRenderingUtils`,
+`FGlobalDistanceFieldParameters2`, signed distance field sampling + gradient.
+**Implementation:** `FClothSceneViewExtension` caches GDF params + view UB in
+`PostRenderBasePassDeferred`; `ClothCollisionDF.usf` samples `GetDistanceToNearestSurfaceGlobal`
+and the gradient to push particles out of any scene mesh, with tangential friction.
+
 ---
 
 ## Portfolio Talking Points
@@ -71,6 +83,9 @@ tangential motion. Colliders authored as Details-panel slots, converted to world
   turbulence, producing realistic billowing without an extra simulation pass."
 - "Implemented GPU sphere/capsule collision with positional correction and tangential friction,
   unifying both shapes as a segment+radius primitive for a branch-light kernel."
+- "Integrated Unreal's Global Distance Field into a custom compute pass (via a SceneViewExtension)
+  so GPU cloth collides against arbitrary scene meshes — the technique Niagara uses for particle
+  collision."
 
 ## Interview Discussion Points
 - Why PBD/XPBD over mass-spring; why velocity is derived from position deltas (stability).

@@ -3,9 +3,11 @@
 #include "ClothSimComponent.h"
 #include "ClothSimResources.h"
 #include "ClothMeshSceneProxy.h"
+#include "ClothSceneViewExtension.h"
 
 #include "DrawDebugHelpers.h"
 #include "DynamicMeshBuilder.h"            // FDynamicMeshVertex
+#include "Engine/Engine.h"                 // GEngine on-screen debug
 #include "Engine/World.h"
 #include "Materials/MaterialInterface.h"
 #include "RenderingThread.h"
@@ -27,6 +29,10 @@ UClothSimComponent::UClothSimComponent()
 void UClothSimComponent::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Register the view extension that snapshots the Global Distance Field (M6).
+	ClothGDF::EnsureRegistered();
+
 	InitializeSimulation();
 
 	// We now have geometry: rebuild bounds and recreate the (previously empty) proxy.
@@ -207,7 +213,12 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	Params.WindTurbulence = WindTurbulence;
 	Params.TimeSeconds    = GetWorld() ? (float)GetWorld()->GetTimeSeconds() : 0.0f;
 
-	// Collision (M5): build world-space colliders from the authored slots.
+	// Collision (M5/M6).
+	Params.Friction                   = Friction;
+	Params.bUseDistanceFieldCollision = bUseDistanceFieldCollision;
+	Params.DFThickness                = DistanceFieldThickness;
+
+	// Build world-space colliders from the authored slots.
 	const FTransform& Xform = GetComponentTransform();
 	Params.Colliders.Reserve(Colliders.Num());
 	for (const FClothCollider& C : Colliders)
@@ -260,6 +271,18 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	if (bDrawColliders)
 	{
 		DrawColliders();
+	}
+
+	// M6 diagnostic: report whether the Global Distance Field snapshot is reaching us.
+	if (bUseDistanceFieldCollision && GEngine)
+	{
+		const FClothGDFCache& Cache = ClothGDF::Get();
+		GEngine->AddOnScreenDebugMessage(
+			(uint64)(UPTRINT)this, 0.0f,
+			Cache.bValid ? FColor::Green : FColor::Red,
+			FString::Printf(TEXT("ClothSim GDF: valid=%d  clipmaps=%d"),
+				Cache.bValid ? 1 : 0,
+				Cache.bValid ? Cache.Data.NumGlobalSDFClipmaps : 0));
 	}
 }
 

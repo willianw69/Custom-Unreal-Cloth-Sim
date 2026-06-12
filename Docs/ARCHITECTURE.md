@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 
 > Technical system documentation. Update whenever the architecture changes.
-> Last updated: 2026-06-12 (after M5).
+> Last updated: 2026-06-12 (after M6).
 
 ## High-Level Architecture
 
@@ -39,8 +39,20 @@
 3. **Collision** (`ClothCollision.usf`, if any colliders): in place on the solved predicted
    buffer, push each penetrating particle out to the collider surface (capsule = segment+radius;
    sphere = degenerate), then damp the tangential part of its motion for friction.
+3b. **Distance-field collision** (`ClothCollisionDF.usf`, if enabled + GDF available): sample the
+   Global Distance Field at each particle and push out along the gradient — collides with any
+   scene mesh. Binds the standalone GDF params + a snapshotted View uniform buffer.
 4. **Finalize** (`ClothFinalize.usf`): `v = (predicted − x)/dt; x = predicted`. Velocity is
    *derived* from the solved (and collided) motion — the source of PBD's stability.
+
+### Global Distance Field plumbing (M6)
+The GDF is renderer-owned and only valid during scene rendering, so a minimal
+`FClothSceneViewExtension` captures it each frame in `PostRenderBasePassDeferred_RenderThread`:
+`UE::FXRenderingUtils::GetGlobalDistanceFieldParameterData(view)` → cached `FGlobalDistanceFieldParameterData`,
+plus `FSceneView::ViewUniformBuffer` and `PreViewTranslation`. The (separately-enqueued) sim reads
+this cache (1-frame lag is fine — GDF atlas is persistent) and binds it to the DF collision pass.
+The DF shader uses the header's non-material branch, so GDF inputs come from
+`FGlobalDistanceFieldParameters2`; `View` is bound only to satisfy transitive `ResolvedView` refs.
 
 ## Rendering Pipeline
 - Topology (index buffer) + UVs are **static**, built once on the game thread.

@@ -136,3 +136,39 @@ world (drape over a sphere, slide off a capsule).
 **Performance:** O(particles × colliders) per substep; trivial for a handful of colliders.
 
 **Next:** M6 — colored Gauss-Seidel solver + bending constraints.
+
+---
+
+## 2026-06-12 — M6: Distance Field Mesh Collision (reassigned from solver upgrade)
+**What:** Cloth now collides with ANY scene mesh via Unreal's Global Distance Field (GDF), in
+addition to the analytic colliders. A minimal `FClothSceneViewExtension` snapshots the scene's
+GDF parameters (`UE::FXRenderingUtils::GetGlobalDistanceFieldParameterData`) and the view's
+uniform buffer each frame; `ClothCollisionDF.usf` samples `GetDistanceToNearestSurfaceGlobal` +
+`GetDistanceFieldGradientGlobal` to push penetrating particles out along the surface gradient,
+with the same tangential friction as M5. Toggle: `bUseDistanceFieldCollision`. Also added a
+collider wireframe debug draw (`bDrawColliders`) so the analytic shapes are visible.
+
+**Why:** "Collide with any mesh" — distance fields are how Niagara does GPU collision against
+arbitrary geometry. Highest portfolio value of the project.
+
+**Problems & solutions (this was the hardest milestone):**
+- *Where to get the GDF:* it's renderer-owned. Used the public `FXRenderingUtils` accessor.
+- *Hook timing:* first captured in `PreRenderView_RenderThread` → GDF not built yet → always null
+  (`valid=0`). Moved capture to `PostRenderBasePassDeferred_RenderThread`, after the GDF exists.
+- *Crash `expected uniform buffer at slot 1 (View)`:* `GlobalDistanceFieldShared.ush` transitively
+  references `ResolvedView`, so the shader requires the engine `View` UB even though the GDF inputs
+  come from our standalone `FGlobalDistanceFieldParameters2`. Fixed by snapshotting
+  `FSceneView::ViewUniformBuffer` (public) in the SVE and binding it via `SHADER_PARAMETER_STRUCT_REF`.
+- *Standalone vs view-UB GDF params:* the header's non-material branch (`DISTANCE_FIELD_IN_VIEW_UB`
+  off) declares the GDF inputs as loose params matching `FGlobalDistanceFieldParameters2`, so a
+  compute shader can sample the GDF without being a material. Sampling is in translated world
+  space (world + cached `PreViewTranslation`).
+- *GDF generation:* requires "Generate Mesh Distance Fields" + a consumer; forced via
+  `r.DistanceFieldAO=1` / `r.AOGlobalDistanceField=1` in DefaultEngine.ini ([SystemSettings]).
+- Added an on-screen `ClothSim GDF: valid=/clipmaps=` diagnostic that was essential to isolate the
+  hook-timing vs generation issues.
+
+**Performance:** one extra compute pass/substep when enabled; one field sample + gradient per
+particle. GDF is coarse, so collision is approximate on small/thin meshes.
+
+**Next:** M7 — colored Gauss-Seidel solver + bending constraints.

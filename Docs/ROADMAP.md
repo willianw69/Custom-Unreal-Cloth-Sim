@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Project progress tracker. ✅ Completed · 🔄 In Progress · ⏳ Planned
-> Last updated: 2026-06-12 (after M5).
+> Last updated: 2026-06-12 (after M6).
 
 | Milestone | Title | Status |
 |---|---|---|
@@ -10,9 +10,13 @@
 | M3 | Cloth Rendering | ✅ |
 | M4 | Wind Forces | ✅ |
 | M5 | Sphere & Capsule Collision | ✅ |
-| M6 | Colored Gauss-Seidel + Bending | ⏳ |
-| M7 | Debug Viz Polish + Profiling | ⏳ |
+| M6 | Distance Field Mesh Collision | ✅ |
+| M7 | Colored Gauss-Seidel + Bending | ⏳ |
+| M8 | Debug Viz Polish + Profiling | ⏳ |
 | M+ | Zero-copy GPU Rendering Path | ⏳ (stretch) |
+
+(M6 was reassigned from the originally-planned solver upgrade to distance-field collision at the
+user's request; the Gauss-Seidel + bending work is now M7.)
 
 ## Notes per Milestone
 
@@ -41,11 +45,17 @@ Collider list in a GPU buffer (unified capsule = segment+radius; sphere = degene
 `ClothCollision.usf` pass after the solver projects penetrating particles to the surface and
 damps tangential motion (friction). Editable collider slots + `bPinTopEdge` on the component.
 
-### M6 — Colored Gauss-Seidel + Bending ⏳
+### M6 — Distance Field Mesh Collision ✅
+Cloth collides with arbitrary scene meshes via Unreal's Global Distance Field. SceneViewExtension
+snapshots GDF params + view uniform buffer (`PostRenderBasePassDeferred`); `ClothCollisionDF.usf`
+samples the field + gradient to project particles out. Toggle `bUseDistanceFieldCollision`.
+Requires "Generate Mesh Distance Fields" + a GDF consumer (forced via DFAO cvars).
+
+### M7 — Colored Gauss-Seidel + Bending ⏳
 Explicit constraint buffer + CPU graph coloring → parallel Gauss-Seidel (faster convergence).
 Add bending/dihedral constraints to resist sharp folds.
 
-### M7 — Debug Viz Polish + Profiling ⏳
+### M8 — Debug Viz Polish + Profiling ⏳
 GPU-resident particle/constraint debug draws (strain coloring), Unreal Insights / `stat GPU`
 captures, resolution-vs-ms graph for the portfolio.
 
