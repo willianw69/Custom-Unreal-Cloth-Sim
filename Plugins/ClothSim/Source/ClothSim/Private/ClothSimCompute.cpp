@@ -105,7 +105,35 @@ public:
 	}
 };
 
+class FClothCollisionCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FClothCollisionCS);
+	SHADER_USE_PARAMETER_STRUCT(FClothCollisionCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float3>, PredictedPositions)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float3>, PrevPositions)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float>, InvMasses)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FGPUCollider>, Colliders)
+		SHADER_PARAMETER(uint32, NumParticles)
+		SHADER_PARAMETER(uint32, NumColliders)
+		SHADER_PARAMETER(float, ContactOffset)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), kThreadGroupSize);
+	}
+};
+
 IMPLEMENT_GLOBAL_SHADER(FClothPredictCS,        "/ClothSim/Private/ClothPredict.usf",        "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FClothCollisionCS,      "/ClothSim/Private/ClothCollision.usf",      "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothSolveDistanceCS,  "/ClothSim/Private/ClothSolveDistance.usf",  "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothFinalizeCS,       "/ClothSim/Private/ClothFinalize.usf",       "MainCS", SF_Compute);
 
@@ -216,9 +244,22 @@ void ClothSimCompute::Dispatch_RenderThread(
 	const float SubDt      = Params.DeltaTime / (float)Substeps;
 	const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(Num, kThreadGroupSize);
 
+	// Colliders are constant within a frame; build the buffer once.
+	const int32 NumColliders = Params.Colliders.Num();
+	FRDGBufferSRVRef CollidersSRV = nullptr;
+	if (NumColliders > 0)
+	{
+		FRDGBufferRef CollidersBuf = CreateStructuredBuffer(
+			GraphBuilder, TEXT("Cloth.Colliders"),
+			sizeof(FGPUCollider), NumColliders,
+			Params.Colliders.GetData(), sizeof(FGPUCollider) * NumColliders);
+		CollidersSRV = GraphBuilder.CreateSRV(CollidersBuf);
+	}
+
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 	TShaderMapRef<FClothPredictCS>       PredictCS(ShaderMap);
 	TShaderMapRef<FClothSolveDistanceCS> SolveCS(ShaderMap);
+	TShaderMapRef<FClothCollisionCS>     CollisionCS(ShaderMap);
 	TShaderMapRef<FClothFinalizeCS>      FinalizeCS(ShaderMap);
 
 	if (SubDt > 0.0f)
@@ -271,6 +312,23 @@ void ClothSimCompute::Dispatch_RenderThread(
 				Swap(In, Out);
 			}
 			// After the loop, `In` holds the latest solved positions.
+
+			// --- Collision: project predicted positions out of colliders + friction ---
+			if (CollidersSRV)
+			{
+				FClothCollisionCS::FParameters* P = GraphBuilder.AllocParameters<FClothCollisionCS::FParameters>();
+				P->PredictedPositions = GraphBuilder.CreateUAV(In);    // in place; one thread per particle
+				P->PrevPositions      = GraphBuilder.CreateSRV(Positions); // start-of-substep position
+				P->InvMasses          = InvMassesSRV;
+				P->Colliders          = CollidersSRV;
+				P->NumParticles       = (uint32)Num;
+				P->NumColliders       = (uint32)NumColliders;
+				P->ContactOffset      = 1.0f; // cm skin so cloth rests just off the surface
+
+				FComputeShaderUtils::AddPass(GraphBuilder,
+					RDG_EVENT_NAME("ClothCollision (substep %d)", Step),
+					CollisionCS, P, GroupCount);
+			}
 
 			// --- Finalize: derive velocity, commit positions ---
 			{

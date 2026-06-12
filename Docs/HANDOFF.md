@@ -2,7 +2,7 @@
 
 > For a new session/engineer to continue immediately. Assume zero prior context.
 > Update after every milestone — always represents the current state.
-> Last updated: 2026-06-12 (after M4).
+> Last updated: 2026-06-12 (after M5).
 
 ## Project Summary
 From-scratch **GPU cloth simulation in UE 5.7** (no Chaos Cloth). Custom compute shaders do
@@ -10,13 +10,14 @@ XPBD/PBD on structured buffers; rendered as a dynamic lit mesh. Portfolio projec
 Host project `ClothSimDemo`, all work in `Plugins/ClothSim`. Engine: `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-M4 (Wind Forces) complete and verified. Next is M5 (Sphere & Capsule Collision).
+M5 (Sphere & Capsule Collision) complete and verified. Next is M6 (Colored Gauss-Seidel + Bending).
 
 ## Completed Work
 - M1: GPU integration + structured buffers + RDG + debug points.
 - M2: XPBD distance constraints (Jacobi per-particle gather) + substepping + fixed timestep.
 - M3: `UMeshComponent` + `FClothMeshSceneProxy` (FLocalVertexFactory), lit cloth, CPU normals.
 - M4: normal-dependent aerodynamic wind + turbulence in the Predict pass (GPU normals).
+- M5: sphere/capsule collision (`ClothCollision.usf`) + friction; editable collider slots.
 
 ## Current Technical Decisions
 - PBD/XPBD; velocity derived from position delta.
@@ -32,7 +33,7 @@ M4 (Wind Forces) complete and verified. Next is M5 (Sphere & Capsule Collision).
 
 ## Important Files
 - `Plugins/ClothSim/Source/ClothSim/Private/ClothSimCompute.cpp` — shader classes + RDG dispatch.
-- `Plugins/ClothSim/Shaders/Private/ClothPredict|ClothSolveDistance|ClothFinalize.usf` — sim.
+- `Plugins/ClothSim/Shaders/Private/ClothPredict|ClothSolveDistance|ClothCollision|ClothFinalize.usf` — sim.
 - `Plugins/ClothSim/Source/ClothSim/Private/ClothSimComponent.cpp` — component, topology, normals, update.
 - `Plugins/ClothSim/Source/ClothSim/Private/ClothMeshSceneProxy.cpp` — mesh rendering.
 - `Plugins/ClothSim/Source/ClothSim/Public/ClothSimResources.h` — `FClothSimParams`, `FClothRenderResources`.
@@ -48,10 +49,11 @@ M4 (Wind Forces) complete and verified. Next is M5 (Sphere & Capsule Collision).
 - Header/UPROPERTY/new-shader changes need a full rebuild + editor restart (Live Coding can't hot-patch them).
 
 ## Immediate Next Task
-**M5 — Sphere & Capsule Collision.** Add a GPU collider buffer (spheres = center+radius,
-capsules = A,B+radius) populated from the component. Add a `ClothCollision.usf` pass after the
-solver (or fold into Finalize) that projects predicted positions out of each collider and damps
-tangential velocity for friction. Expose collider transforms on the actor/component.
+**M6 — Colored Gauss-Seidel + Bending.** Build an explicit distance-constraint buffer (idxA,
+idxB, restLength) and partition it into colors on the CPU (no two constraints in a color share a
+particle). Replace/augment the Jacobi gather solver with per-color Gauss-Seidel dispatches
+(faster convergence). Add bending constraints (distance to the 2-away neighbour, or dihedral) to
+resist sharp folds. Keep the Jacobi path available for comparison/profiling (M7).
 
 ## Recommended Prompt For Future Claude Sessions
 > "Read `Docs/HANDOFF.md`, `Docs/PROJECT_STATE.md`, and `Docs/ARCHITECTURE.md` to load context.

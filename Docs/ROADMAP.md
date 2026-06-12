@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Project progress tracker. ✅ Completed · 🔄 In Progress · ⏳ Planned
-> Last updated: 2026-06-12.
+> Last updated: 2026-06-12 (after M5).
 
 | Milestone | Title | Status |
 |---|---|---|
@@ -9,7 +9,7 @@
 | M2 | XPBD Distance Constraints | ✅ |
 | M3 | Cloth Rendering | ✅ |
 | M4 | Wind Forces | ✅ |
-| M5 | Sphere & Capsule Collision | ⏳ |
+| M5 | Sphere & Capsule Collision | ✅ |
 | M6 | Colored Gauss-Seidel + Bending | ⏳ |
 | M7 | Debug Viz Polish + Profiling | ⏳ |
 | M+ | Zero-copy GPU Rendering Path | ⏳ (stretch) |
@@ -36,9 +36,10 @@ World-space wind vector + animated turbulence; normal-dependent aerodynamic drag
 `F = WindDrag · dot(v_air−v_cloth, n) · n` applied in the Predict pass, with per-particle GPU
 normals from grid neighbours. Exposed WindDirection/Strength/Drag/Turbulence. Cloth billows.
 
-### M5 — Sphere & Capsule Collision ⏳
-Collider list (spheres, capsules) in a GPU buffer; collision pass projects predicted
-positions out of colliders + tangential friction. Stops the cloth falling through things.
+### M5 — Sphere & Capsule Collision ✅
+Collider list in a GPU buffer (unified capsule = segment+radius; sphere = degenerate).
+`ClothCollision.usf` pass after the solver projects penetrating particles to the surface and
+damps tangential motion (friction). Editable collider slots + `bPinTopEdge` on the component.
 
 ### M6 — Colored Gauss-Seidel + Bending ⏳
 Explicit constraint buffer + CPU graph coloring → parallel Gauss-Seidel (faster convergence).

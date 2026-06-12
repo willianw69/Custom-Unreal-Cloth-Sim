@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 
 > Technical system documentation. Update whenever the architecture changes.
-> Last updated: 2026-06-12 (after M4).
+> Last updated: 2026-06-12 (after M5).
 
 ## High-Level Architecture
 
@@ -36,8 +36,11 @@
    up to 8 grid neighbours (4 structural rest=`Spacing`, 4 shear rest=`Spacing·√2`), computes
    each PBD distance correction, averages (Jacobi under-relaxation), writes its own slot.
    Two predicted buffers are ping-ponged between iterations.
-3. **Finalize** (`ClothFinalize.usf`): `v = (predicted − x)/dt; x = predicted`. Velocity is
-   *derived* from the solved motion — the source of PBD's stability.
+3. **Collision** (`ClothCollision.usf`, if any colliders): in place on the solved predicted
+   buffer, push each penetrating particle out to the collider surface (capsule = segment+radius;
+   sphere = degenerate), then damp the tangential part of its motion for friction.
+4. **Finalize** (`ClothFinalize.usf`): `v = (predicted − x)/dt; x = predicted`. Velocity is
+   *derived* from the solved (and collided) motion — the source of PBD's stability.
 
 ## Rendering Pipeline
 - Topology (index buffer) + UVs are **static**, built once on the game thread.
@@ -59,6 +62,7 @@ FRDGBuilder
       In=A, Out=B
       for it in [0..SolverIterations):
           AddPass ClothSolveDistance  (PredictedIn,InvMass) -> PredictedOut ; swap(In,Out)
+      if NumColliders: AddPass ClothCollision (In[UAV], PrevPos=Positions, Colliders)  // in place
       AddPass  ClothFinalize          (PredictedIn=In, InvMass) -> Positions, Velocities
   AddEnqueueCopyPass(PositionReadback, Positions)         // for debug + mesh render
 GraphBuilder.Execute()
@@ -71,6 +75,7 @@ GraphBuilder.Execute()
 | Velocities | StructuredBuffer<float3> | persistent (pooled) | 12 B | cm/s |
 | InvMasses | StructuredBuffer<float> | persistent (pooled) | 4 B | 0 = pinned |
 | PredictedA/B | StructuredBuffer<float3> | transient (per frame) | 12 B | solver ping-pong |
+| Colliders | StructuredBuffer<FCollider> | transient (per frame) | 32 B | A,radius,B,friction |
 | PositionReadback | FRHIGPUBufferReadback | persistent | — | non-stalling CPU copy |
 
 Render-side vertex buffers (position, tangents, UV, color, index) live in the scene proxy
@@ -85,6 +90,7 @@ via `FStaticMeshVertexBuffers` and are updated by CPU lock+memcpy.
 - `ClothPredict.usf` — external forces (gravity + normal-dependent wind/drag + turbulence) and
   position prediction. Computes per-particle normals on the fly from grid neighbours.
 - `ClothSolveDistance.usf` — distance-constraint relaxation (Jacobi gather).
+- `ClothCollision.usf` — project predicted positions out of sphere/capsule colliders + friction.
 - `ClothFinalize.usf` — commit positions, derive velocity.
 - (Shader virtual path root `/ClothSim` → `Plugins/ClothSim/Shaders`, mapped at module
   startup in `FClothSimModule::StartupModule`; files referenced as `/ClothSim/Private/...`.)

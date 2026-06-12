@@ -41,6 +41,16 @@ turbulence for organic gusting.
 **Implementation:** `F_aero = WindDrag · dot(v_air − v_cloth, n) · n` in `ClothPredict.usf`;
 `v_air = WindDir·WindStrength + turbulence(pos, time)`; exposed wind params on the component.
 
+## M5 — Sphere & Capsule Collision + Friction
+**Technical challenges:** GPU collision against analytic shapes with correct response and
+friction, ordered correctly within the PBD substep, without data races. Unified spheres and
+capsules as a single segment+radius primitive to keep the kernel branch-light.
+**Technologies:** HLSL compute, closest-point-on-segment, positional projection, Coulomb-style
+tangential friction, structured collider buffer.
+**Implementation:** `ClothCollision.usf` runs after the solver, in place on the predicted buffer
+(one thread per particle → no races); pushes penetrating particles to the surface and damps
+tangential motion. Colliders authored as Details-panel slots, converted to world space per frame.
+
 ---
 
 ## Portfolio Talking Points
@@ -59,6 +69,8 @@ turbulence for organic gusting.
   substepping, achieving stable, deterministic cloth behaviour."
 - "Added GPU wind interaction with a normal-dependent aerodynamic drag model and procedural
   turbulence, producing realistic billowing without an extra simulation pass."
+- "Implemented GPU sphere/capsule collision with positional correction and tangential friction,
+  unifying both shapes as a segment+radius primitive for a branch-light kernel."
 
 ## Interview Discussion Points
 - Why PBD/XPBD over mass-spring; why velocity is derived from position deltas (stability).

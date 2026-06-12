@@ -110,3 +110,29 @@ behaviour matches M3 until enabled. Verified billowing/rippling, stable, anchore
 1024 particles. No extra passes or buffers.
 
 **Next:** M5 sphere & capsule collision.
+
+---
+
+## 2026-06-12 — M5: Sphere & Capsule Collision
+**What:** Added `ClothCollision.usf`, a pass that runs after the distance solver each substep
+(before Finalize) and projects predicted positions out of colliders, plus tangential friction.
+Colliders are unified as a **capsule (segment A-B + radius)**; a **sphere is the A==B** case, so
+one routine handles both. Collider slots authored in the Details panel
+(`TArray<FClothCollider>`: type, center, radius, half-height, rotation) are converted to
+world-space `FGPUCollider`s each frame and uploaded to a structured buffer. Added a global
+`Friction` and a `bPinTopEdge` option for clean draping tests.
+
+**Why:** Collision is a core requirement and the feature that makes the cloth interact with the
+world (drape over a sphere, slide off a capsule).
+
+**Problems & solutions:**
+- Pass ordering: collision runs **after** Solve and **before** Finalize, operating on the solved
+  predicted buffer **in place** (each thread touches only its own particle → bound the predicted
+  buffer as a UAV with no races). Friction uses `PrevPositions` = the start-of-substep `Positions`
+  (still valid at this point since Finalize hasn't run yet). RDG sequences the UAV-write →
+  SRV-read into Finalize automatically.
+- Used a 1 cm `ContactOffset` skin so the cloth rests just off the surface (avoids z-fighting/poke).
+
+**Performance:** O(particles × colliders) per substep; trivial for a handful of colliders.
+
+**Next:** M6 — colored Gauss-Seidel solver + bending constraints.

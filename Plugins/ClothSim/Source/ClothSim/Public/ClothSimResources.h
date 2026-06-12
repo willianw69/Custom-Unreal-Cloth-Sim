@@ -13,6 +13,20 @@ class FRHICommandListImmediate;
  * Plain value type: it is copied into the render command lambda, so it must not
  * hold raw pointers to game-thread-owned UObjects.
  */
+/**
+ * One collider, as the GPU sees it. Both shapes are represented as a CAPSULE
+ * (a line segment A-B with a radius); a SPHERE is just the degenerate case A == B.
+ * This lets a single collision routine handle both. Must match the HLSL `FCollider`
+ * struct layout in ClothCollision.usf (32 bytes).
+ */
+struct FGPUCollider
+{
+	FVector3f A = FVector3f::ZeroVector;
+	float     Radius = 0.0f;
+	FVector3f B = FVector3f::ZeroVector;
+	float     Friction = 0.0f; // [0..1] tangential velocity damping on contact
+};
+
 struct FClothSimParams
 {
 	int32   NumParticles = 0;
@@ -35,6 +49,9 @@ struct FClothSimParams
 	float   WindDrag = 1.0f;       // aerodynamic coefficient (how strongly air pushes the face)
 	float   WindTurbulence = 0.0f; // [0..1] fraction of WindVelocity added as animated gusting
 	float   TimeSeconds = 0.0f;    // animation clock for turbulence noise
+
+	// Collision (M5) — world-space colliders rebuilt each frame.
+	TArray<FGPUCollider> Colliders;
 };
 
 /**

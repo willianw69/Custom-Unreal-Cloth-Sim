@@ -10,6 +10,38 @@ struct FClothRenderResources;
 class FClothMeshSceneProxy;
 class UMaterialInterface;
 
+UENUM(BlueprintType)
+enum class EClothColliderType : uint8
+{
+	Sphere,
+	Capsule
+};
+
+/** A single collider authored in the Details panel (transform relative to the component). */
+USTRUCT(BlueprintType)
+struct FClothCollider
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collider")
+	EClothColliderType Type = EClothColliderType::Sphere;
+
+	/** Center offset from the component origin (local space). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collider")
+	FVector Center = FVector(0.0f, 0.0f, -100.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collider", meta = (ClampMin = "0.1"))
+	float Radius = 30.0f;
+
+	/** Capsule only: half the distance between the two end caps, along the local axis. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collider", meta = (ClampMin = "0.0"))
+	float HalfHeight = 50.0f;
+
+	/** Capsule only: orientation of the capsule axis (local up = capsule length). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collider")
+	FRotator Rotation = FRotator::ZeroRotator;
+};
+
 /**
  * UClothSimComponent
  *
@@ -52,6 +84,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Grid")
 	bool bPinTopCorners = true;
 
+	/** Pin the entire top row instead of just the corners (good for draping over colliders). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Grid")
+	bool bPinTopEdge = false;
+
 	/** Acceleration applied to free particles (cm/s^2). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Physics")
 	FVector Gravity = FVector(0.0f, 0.0f, -980.0f);
@@ -75,6 +111,14 @@ public:
 	/** Gustiness [0..1]: fraction of wind added as animated turbulence. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Wind", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float WindTurbulence = 0.5f;
+
+	/** Sphere/capsule colliders the cloth collides against (transforms relative to this component). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision")
+	TArray<FClothCollider> Colliders;
+
+	/** Contact friction [0..1]: how strongly the cloth grips a collider surface. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float Friction = 0.3f;
 
 	/** Substeps per frame. The biggest stability lever: more = stiffer, more stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Solver", meta = (ClampMin = "1", ClampMax = "16"))

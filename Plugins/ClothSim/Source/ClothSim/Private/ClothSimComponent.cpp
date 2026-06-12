@@ -96,8 +96,9 @@ void UClothSimComponent::InitializeSimulation()
 			Positions.Add(FVector3f(Xform.TransformPosition(Local)));
 			Velocities.Add(FVector3f::ZeroVector);
 
-			const bool bPinned = bPinTopCorners && (Y == 0) && (X == 0 || X == GridWidth - 1);
-			InvMasses.Add(bPinned ? 0.0f : 1.0f);
+			const bool bPinnedCorner = bPinTopCorners && (Y == 0) && (X == 0 || X == GridWidth - 1);
+			const bool bPinnedEdge   = bPinTopEdge && (Y == 0);
+			InvMasses.Add((bPinnedCorner || bPinnedEdge) ? 0.0f : 1.0f);
 		}
 	}
 
@@ -205,6 +206,32 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	Params.WindDrag       = WindDrag;
 	Params.WindTurbulence = WindTurbulence;
 	Params.TimeSeconds    = GetWorld() ? (float)GetWorld()->GetTimeSeconds() : 0.0f;
+
+	// Collision (M5): build world-space colliders from the authored slots.
+	const FTransform& Xform = GetComponentTransform();
+	Params.Colliders.Reserve(Colliders.Num());
+	for (const FClothCollider& C : Colliders)
+	{
+		FGPUCollider G;
+		G.Radius   = C.Radius;
+		G.Friction = Friction;
+
+		if (C.Type == EClothColliderType::Sphere)
+		{
+			const FVector World = Xform.TransformPosition(C.Center);
+			G.A = FVector3f(World);
+			G.B = G.A; // degenerate capsule == sphere
+		}
+		else // Capsule: endpoints = center ± (axis * halfHeight), in local then to world
+		{
+			const FVector Axis = C.Rotation.RotateVector(FVector::UpVector);
+			const FVector LocalA = C.Center + Axis * C.HalfHeight;
+			const FVector LocalB = C.Center - Axis * C.HalfHeight;
+			G.A = FVector3f(Xform.TransformPosition(LocalA));
+			G.B = FVector3f(Xform.TransformPosition(LocalB));
+		}
+		Params.Colliders.Add(G);
+	}
 
 	// Fixed-timestep accumulator (frame-rate independent, see header).
 	TimeAccumulator += DeltaTime;
