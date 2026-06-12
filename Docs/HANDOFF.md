@@ -2,7 +2,7 @@
 
 > For a new session/engineer to continue immediately. Assume zero prior context.
 > Update after every milestone — always represents the current state.
-> Last updated: 2026-06-11 (after M3).
+> Last updated: 2026-06-12 (after M4).
 
 ## Project Summary
 From-scratch **GPU cloth simulation in UE 5.7** (no Chaos Cloth). Custom compute shaders do
@@ -10,12 +10,13 @@ XPBD/PBD on structured buffers; rendered as a dynamic lit mesh. Portfolio projec
 Host project `ClothSimDemo`, all work in `Plugins/ClothSim`. Engine: `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-M3 (Cloth Rendering) complete and verified. Next is M4 (Wind Forces).
+M4 (Wind Forces) complete and verified. Next is M5 (Sphere & Capsule Collision).
 
 ## Completed Work
 - M1: GPU integration + structured buffers + RDG + debug points.
 - M2: XPBD distance constraints (Jacobi per-particle gather) + substepping + fixed timestep.
 - M3: `UMeshComponent` + `FClothMeshSceneProxy` (FLocalVertexFactory), lit cloth, CPU normals.
+- M4: normal-dependent aerodynamic wind + turbulence in the Predict pass (GPU normals).
 
 ## Current Technical Decisions
 - PBD/XPBD; velocity derived from position delta.
@@ -47,9 +48,10 @@ M3 (Cloth Rendering) complete and verified. Next is M4 (Wind Forces).
 - Header/UPROPERTY/new-shader changes need a full rebuild + editor restart (Live Coding can't hot-patch them).
 
 ## Immediate Next Task
-**M4 — Wind Forces.** Add wind params (direction, strength, turbulence) to `FClothSimParams`
-and `UClothSimComponent`; apply an aerodynamic drag force in `ClothPredict.usf`
-(`F ∝ (v_rel·n) n`, needs per-particle normal — reuse grid normal or pass from a normals pass).
+**M5 — Sphere & Capsule Collision.** Add a GPU collider buffer (spheres = center+radius,
+capsules = A,B+radius) populated from the component. Add a `ClothCollision.usf` pass after the
+solver (or fold into Finalize) that projects predicted positions out of each collider and damps
+tangential velocity for friction. Expose collider transforms on the actor/component.
 
 ## Recommended Prompt For Future Claude Sessions
 > "Read `Docs/HANDOFF.md`, `Docs/PROJECT_STATE.md`, and `Docs/ARCHITECTURE.md` to load context.

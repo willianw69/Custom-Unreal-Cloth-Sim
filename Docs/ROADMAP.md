@@ -1,14 +1,14 @@
 # ROADMAP.md
 
 > Project progress tracker. ✅ Completed · 🔄 In Progress · ⏳ Planned
-> Last updated: 2026-06-11.
+> Last updated: 2026-06-12.
 
 | Milestone | Title | Status |
 |---|---|---|
 | M1 | Particle Simulation | ✅ |
 | M2 | XPBD Distance Constraints | ✅ |
 | M3 | Cloth Rendering | ✅ |
-| M4 | Wind Forces | ⏳ |
+| M4 | Wind Forces | ✅ |
 | M5 | Sphere & Capsule Collision | ⏳ |
 | M6 | Colored Gauss-Seidel + Bending | ⏳ |
 | M7 | Debug Viz Polish + Profiling | ⏳ |
@@ -31,9 +31,10 @@ Converted component to `UMeshComponent`; custom `FClothMeshSceneProxy` with
 `FLocalVertexFactory`. Lit fabric surface, CPU smooth normals, vertices from GPU sim via
 small readback. (Zero-copy GPU vertex write intentionally deferred.)
 
-### M4 — Wind Forces ⏳
-World-space wind vector + turbulence/noise; aerodynamic drag `F ∝ (v_rel·n) n · area`
-applied in the Predict pass. Expose wind direction/strength/turbulence params.
+### M4 — Wind Forces ✅
+World-space wind vector + animated turbulence; normal-dependent aerodynamic drag
+`F = WindDrag · dot(v_air−v_cloth, n) · n` applied in the Predict pass, with per-particle GPU
+normals from grid neighbours. Exposed WindDirection/Strength/Drag/Turbulence. Cloth billows.
 
 ### M5 — Sphere & Capsule Collision ⏳
 Collider list (spheres, capsules) in a GPU buffer; collision pass projects predicted

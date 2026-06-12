@@ -1,10 +1,16 @@
 // ClothPredict.usf
 //
-// Step 1 of the substep loop. Applies external forces (gravity) and damping to a
-// LOCAL copy of velocity, then predicts a candidate position. We do NOT write
+// Step 1 of the substep loop. Applies external forces (gravity + wind) and damping
+// to a LOCAL copy of velocity, then predicts a candidate position. We do NOT write
 // velocity here: in PBD/XPBD the authoritative velocity is re-derived from the
-// position change in the Finalize pass. Positions/Velocities are read-only inputs;
-// the only output is the predicted-position workspace buffer.
+// position change in the Finalize pass.
+//
+// M4 adds an aerodynamic WIND force. Wind pushes hardest on cloth that faces into
+// it, so the force depends on the surface NORMAL. We compute a smooth per-particle
+// normal on the fly from the grid neighbours (no extra pass/buffer), then apply a
+// drag-style force along the normal:
+//     F_aero = WindDrag * dot(v_air_relative, n) * n
+// This makes the sheet billow and ripple instead of being shoved uniformly.
 
 #include "/Engine/Public/Platform.ush"
 
@@ -18,9 +24,48 @@ StructuredBuffer<float>		InvMasses;
 RWStructuredBuffer<float3>	PredictedPositions;
 
 uint	NumParticles;
-float	SubDeltaTime;	// dt of ONE substep
+uint	GridWidth;
+uint	GridHeight;
+float	SubDeltaTime;
 float3	Gravity;
 float	Damping;
+
+// Wind
+float3	WindVelocity;	// base air velocity (world space, cm/s)
+float	WindDrag;		// aerodynamic coefficient
+float	WindTurbulence;	// [0..1] gust amount
+float	TimeSeconds;	// turbulence clock
+
+// --- helpers ---------------------------------------------------------------
+
+float3 GetPos(int X, int Y)
+{
+	X = clamp(X, 0, (int)GridWidth - 1);
+	Y = clamp(Y, 0, (int)GridHeight - 1);
+	return Positions[(uint)(Y * (int)GridWidth + X)];
+}
+
+// Smooth grid normal from cardinal neighbours (central differences).
+float3 ComputeNormal(int X, int Y)
+{
+	const float3 DX = GetPos(X + 1, Y) - GetPos(X - 1, Y); // along +X
+	const float3 DZ = GetPos(X, Y + 1) - GetPos(X, Y - 1); // along grid-row direction
+	const float3 N = cross(DZ, DX);
+	const float Len = length(N);
+	return (Len > 1e-6f) ? (N / Len) : float3(0.0f, 1.0f, 0.0f);
+}
+
+// Cheap smooth pseudo-turbulence: a few sines of position + time. Returns a vector
+// roughly in [-1,1]^3, used to gust the wind around its base direction.
+float3 Turbulence(float3 P, float T)
+{
+	const float3 Q = P * 0.01f; // scale world cm -> reasonable noise frequency
+	float3 G;
+	G.x = sin(Q.y * 1.3f + T * 1.7f) + 0.5f * sin(Q.z * 2.1f - T * 1.1f);
+	G.y = sin(Q.z * 1.1f + T * 1.3f) + 0.5f * sin(Q.x * 1.9f + T * 0.9f);
+	G.z = sin(Q.x * 1.7f - T * 1.5f) + 0.5f * sin(Q.y * 2.3f + T * 1.2f);
+	return G * 0.6667f; // normalize the (1 + 0.5) amplitude back toward [-1,1]
+}
 
 [numthreads(THREADGROUP_SIZE, 1, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -33,16 +78,36 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	const float3 X = Positions[Index];
 
-	// Pinned particles never move: their predicted position == current position,
-	// which is exactly what the solver reads for neighbours.
 	if (InvMasses[Index] <= 0.0f)
 	{
-		PredictedPositions[Index] = X;
+		PredictedPositions[Index] = X; // pinned
 		return;
 	}
 
 	float3 V = Velocities[Index];
+
+	// Gravity.
 	V += Gravity * SubDeltaTime;
+
+	// Wind: gusting air velocity, then a normal-aligned aerodynamic drag force.
+	if (WindDrag > 0.0f)
+	{
+		const int Gx = (int)(Index % GridWidth);
+		const int Gy = (int)(Index / GridWidth);
+		const float3 N = ComputeNormal(Gx, Gy);
+
+		float3 Air = WindVelocity;
+		if (WindTurbulence > 0.0f)
+		{
+			Air += WindVelocity * WindTurbulence * Turbulence(X, TimeSeconds);
+		}
+
+		const float3 VRel = Air - V;                       // air relative to the cloth
+		const float3 Aero = WindDrag * dot(VRel, N) * N;   // pushes the face the air hits
+		V += Aero * SubDeltaTime;
+	}
+
+	// Damping (frame-rate independent).
 	V *= saturate(1.0f - Damping * SubDeltaTime);
 
 	PredictedPositions[Index] = X + V * SubDeltaTime;

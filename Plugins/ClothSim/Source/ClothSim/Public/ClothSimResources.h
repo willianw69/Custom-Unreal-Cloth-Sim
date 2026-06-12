@@ -29,6 +29,12 @@ struct FClothSimParams
 	float   Stiffness = 1.0f;      // [0,1] correction scale
 	float   RestStructural = 5.0f; // adjacent-particle rest length (= Spacing)
 	float   RestShear = 7.0710678f;// diagonal rest length (= Spacing * sqrt(2))
+
+	// Wind (M4)
+	FVector3f WindVelocity = FVector3f::ZeroVector; // base air velocity (cm/s), world space
+	float   WindDrag = 1.0f;       // aerodynamic coefficient (how strongly air pushes the face)
+	float   WindTurbulence = 0.0f; // [0..1] fraction of WindVelocity added as animated gusting
+	float   TimeSeconds = 0.0f;    // animation clock for turbulence noise
 };
 
 /**

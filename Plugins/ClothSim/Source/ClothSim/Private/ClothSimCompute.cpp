@@ -28,9 +28,15 @@ public:
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float>, InvMasses)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float3>, PredictedPositions)
 		SHADER_PARAMETER(uint32, NumParticles)
+		SHADER_PARAMETER(uint32, GridWidth)
+		SHADER_PARAMETER(uint32, GridHeight)
 		SHADER_PARAMETER(float, SubDeltaTime)
 		SHADER_PARAMETER(FVector3f, Gravity)
 		SHADER_PARAMETER(float, Damping)
+		SHADER_PARAMETER(FVector3f, WindVelocity)
+		SHADER_PARAMETER(float, WindDrag)
+		SHADER_PARAMETER(float, WindTurbulence)
+		SHADER_PARAMETER(float, TimeSeconds)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -227,9 +233,15 @@ void ClothSimCompute::Dispatch_RenderThread(
 				P->InvMasses          = InvMassesSRV;
 				P->PredictedPositions = GraphBuilder.CreateUAV(PredictedA);
 				P->NumParticles       = (uint32)Num;
+				P->GridWidth          = (uint32)Params.GridWidth;
+				P->GridHeight         = (uint32)Params.GridHeight;
 				P->SubDeltaTime       = SubDt;
 				P->Gravity            = Params.Gravity;
 				P->Damping            = Params.Damping;
+				P->WindVelocity       = Params.WindVelocity;
+				P->WindDrag           = Params.WindDrag;
+				P->WindTurbulence     = Params.WindTurbulence;
+				P->TimeSeconds        = Params.TimeSeconds;
 
 				FComputeShaderUtils::AddPass(GraphBuilder,
 					RDG_EVENT_NAME("ClothPredict (substep %d)", Step),

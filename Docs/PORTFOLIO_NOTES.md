@@ -32,6 +32,15 @@ generation, correct local/world space handling, and navigating 5.7 RHI API chang
 **Implementation:** Static grid topology + UVs; per-frame readback → local conversion →
 area-weighted normals/tangents → proxy buffer upload; standard lit mesh batch.
 
+## M4 — Wind & Aerodynamic Drag
+**Technical challenges:** Making wind look physical rather than a uniform shove — the force must
+depend on each face's orientation. Computed per-particle surface normals on the GPU inside the
+prediction pass (no extra pass/buffer) and applied a normal-projected drag force. Added animated
+turbulence for organic gusting.
+**Technologies:** HLSL compute, aerodynamic drag model, procedural turbulence (sum of sines).
+**Implementation:** `F_aero = WindDrag · dot(v_air − v_cloth, n) · n` in `ClothPredict.usf`;
+`v_air = WindDir·WindStrength + turbulence(pos, time)`; exposed wind params on the component.
+
 ---
 
 ## Portfolio Talking Points
@@ -48,6 +57,8 @@ area-weighted normals/tangents → proxy buffer upload; standard lit mesh batch.
   deforming meshes with runtime normal generation."
 - "Diagnosed and fixed a frame-rate-dependent simulation instability via fixed-timestep
   substepping, achieving stable, deterministic cloth behaviour."
+- "Added GPU wind interaction with a normal-dependent aerodynamic drag model and procedural
+  turbulence, producing realistic billowing without an extra simulation pass."
 
 ## Interview Discussion Points
 - Why PBD/XPBD over mass-spring; why velocity is derived from position deltas (stability).

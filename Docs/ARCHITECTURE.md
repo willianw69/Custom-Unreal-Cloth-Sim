@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 
 > Technical system documentation. Update whenever the architecture changes.
-> Last updated: 2026-06-11 (after M3).
+> Last updated: 2026-06-12 (after M4).
 
 ## High-Level Architecture
 
@@ -29,8 +29,9 @@
 ```
 
 ## Simulation Pipeline (per fixed timestep, repeated `Substeps` times)
-1. **Predict** (`ClothPredict.usf`): `v += gravity·dt; v *= damping; predicted = x + v·dt`.
-   Pinned particles (InvMass==0) keep their position.
+1. **Predict** (`ClothPredict.usf`): `v += gravity·dt`; **wind**: compute the particle's smooth
+   normal from grid neighbours, then `v += WindDrag·dot(v_air − v, n)·n · dt` (v_air = wind +
+   turbulence); then `v *= damping; predicted = x + v·dt`. Pinned particles keep their position.
 2. **Solve** (`ClothSolveDistance.usf`, ×`SolverIterations`): one thread per particle gathers
    up to 8 grid neighbours (4 structural rest=`Spacing`, 4 shear rest=`Spacing·√2`), computes
    each PBD distance correction, averages (Jacobi under-relaxation), writes its own slot.
@@ -81,7 +82,8 @@ via `FStaticMeshVertexBuffers` and are updated by CPU lock+memcpy.
 - **GPU (render thread):** all simulation math (predict/solve/finalize), the readback copy.
 
 ## Shader Responsibilities
-- `ClothPredict.usf` — external forces + position prediction.
+- `ClothPredict.usf` — external forces (gravity + normal-dependent wind/drag + turbulence) and
+  position prediction. Computes per-particle normals on the fly from grid neighbours.
 - `ClothSolveDistance.usf` — distance-constraint relaxation (Jacobi gather).
 - `ClothFinalize.usf` — commit positions, derive velocity.
 - (Shader virtual path root `/ClothSim` → `Plugins/ClothSim/Shaders`, mapped at module

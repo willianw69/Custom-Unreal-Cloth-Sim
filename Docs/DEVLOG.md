@@ -84,6 +84,29 @@ are O(verts), negligible at 1024.
 ## 2026-06-11 — Docs/Workflow setup
 **What:** Added `Docs/` (PROJECT_STATE, ARCHITECTURE, ROADMAP, DEVLOG, HANDOFF, PORTFOLIO_NOTES),
 a UE `.gitignore`, and initialized git per the Development Workflow Requirements. Backfilled
-M1–M3 history. Adopting per-milestone doc updates + commits going forward.
+M1–M3 history. Adopting per-milestone doc updates + commits going forward. Pushed to GitHub
+(`willianw69/Custom-Unreal-Cloth-Sim`, branch `main`).
 
 **Next:** M4 wind forces.
+
+---
+
+## 2026-06-12 — M4: Wind Forces
+**What:** Added a normal-dependent aerodynamic wind force to `ClothPredict.usf`. Each particle
+computes its smooth surface normal on the GPU from grid neighbours (central differences, no
+extra pass/buffer), then applies `F_aero = WindDrag · dot(v_air − v_cloth, n) · n`. Air velocity
+= `WindDirection·WindStrength` plus animated turbulence (sum of sines of position+time scaled by
+`WindTurbulence`). New params on `FClothSimParams`, `FClothPredictCS`, and `UClothSimComponent`
+(WindDirection/Strength/Drag/Turbulence). `TimeSeconds` sourced from world time.
+
+**Why:** Wind interaction is a core requirement and a visually compelling portfolio feature.
+A normal-dependent (vs uniform) force is what produces realistic billowing — faces angled into
+the wind catch it; edge-on faces slip through.
+
+**Problems & solutions:** None significant — compiled first try. Wind defaults to Strength=0 so
+behaviour matches M3 until enabled. Verified billowing/rippling, stable, anchored at corners.
+
+**Performance:** Predict pass now also reads 4 neighbours/particle for the normal; negligible at
+1024 particles. No extra passes or buffers.
+
+**Next:** M5 sphere & capsule collision.

@@ -1,7 +1,7 @@
 # PROJECT_STATE.md
 
 > Single source of truth for current project status. Update after every milestone.
-> Last updated: 2026-06-11 (after M3).
+> Last updated: 2026-06-12 (after M4).
 
 ## Project Overview
 Real-time **GPU cloth simulation built from scratch** in **Unreal Engine 5.7**, as a
@@ -14,7 +14,7 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
 - **Engine install:** `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-**M3 — Cloth Rendering: COMPLETE and verified in-editor.**
+**M4 — Wind Forces: COMPLETE and verified in-editor.**
 
 ## Completed Milestones
 - **M1 — Particle Simulation.** GPU integration (gravity + damping), structured buffers,
@@ -26,15 +26,21 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
   `FClothMeshSceneProxy` (FLocalVertexFactory + FStaticMeshVertexBuffers). Lit fabric
   surface with CPU-computed smooth normals; vertices sourced from the GPU sim via a small
   readback.
+- **M4 — Wind Forces.** Normal-dependent aerodynamic drag in the Predict pass
+  (`F = WindDrag · dot(v_air−v_cloth, n) · n`), with per-particle GPU normals and animated
+  turbulence. Cloth billows/ripples. Exposed Wind direction/strength/drag/turbulence.
 
 ## In-Progress Work
-- Documentation system setup (this `Docs/` folder) and git workflow adoption.
+- None (between milestones).
 
 ## Next Milestone
-**M4 — Wind Forces.** Add a world-space wind vector + turbulence and an aerodynamic drag
-model (force vs. surface normal) into the Predict compute pass; expose wind parameters.
+**M5 — Sphere & Capsule Collision.** GPU collider buffer; a collision pass projects predicted
+positions out of spheres/capsules and applies tangential friction so the cloth drapes over
+objects instead of passing through.
 
 ## Technical Decisions
+- **Wind model:** normal-dependent aerodynamic drag computed in the Predict pass; per-particle
+  normals derived on the GPU from grid neighbours (no extra pass); sinusoidal turbulence.
 - **Solver model:** XPBD/PBD. Velocity is derived from the position delta (stable).
 - **Parallelism:** Jacobi via **per-particle gather** of grid neighbours (no atomics, no
   races). Graph-colored Gauss-Seidel deferred to M6.

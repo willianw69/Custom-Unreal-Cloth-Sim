@@ -200,6 +200,12 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	Params.RestStructural   = Spacing;
 	Params.RestShear        = Spacing * FMath::Sqrt(2.0f);
 
+	// Wind (M4).
+	Params.WindVelocity   = FVector3f(WindDirection.GetSafeNormal() * WindStrength);
+	Params.WindDrag       = WindDrag;
+	Params.WindTurbulence = WindTurbulence;
+	Params.TimeSeconds    = GetWorld() ? (float)GetWorld()->GetTimeSeconds() : 0.0f;
+
 	// Fixed-timestep accumulator (frame-rate independent, see header).
 	TimeAccumulator += DeltaTime;
 	TimeAccumulator = FMath::Min(TimeAccumulator, FixedTimeStep * MaxStepsPerFrame);

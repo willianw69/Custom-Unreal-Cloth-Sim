@@ -60,6 +60,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Physics", meta = (ClampMin = "0.0"))
 	float Damping = 0.1f;
 
+	/** Wind direction (world space; auto-normalized). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Wind")
+	FVector WindDirection = FVector(1.0f, 0.0f, 0.0f);
+
+	/** Wind speed (cm/s). 0 disables wind. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Wind", meta = (ClampMin = "0.0"))
+	float WindStrength = 0.0f;
+
+	/** Aerodynamic drag coefficient: how strongly air pushes the cloth faces it hits. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Wind", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+	float WindDrag = 1.0f;
+
+	/** Gustiness [0..1]: fraction of wind added as animated turbulence. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Wind", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WindTurbulence = 0.5f;
+
 	/** Substeps per frame. The biggest stability lever: more = stiffer, more stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Solver", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 Substeps = 2;
