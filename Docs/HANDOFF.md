@@ -2,7 +2,7 @@
 
 > For a new session/engineer to continue immediately. Assume zero prior context.
 > Update after every milestone — always represents the current state.
-> Last updated: 2026-06-12 (after M6).
+> Last updated: 2026-06-15 (after M7).
 
 ## Project Summary
 From-scratch **GPU cloth simulation in UE 5.7** (no Chaos Cloth). Custom compute shaders do
@@ -10,7 +10,8 @@ XPBD/PBD on structured buffers; rendered as a dynamic lit mesh. Portfolio projec
 Host project `ClothSimDemo`, all work in `Plugins/ClothSim`. Engine: `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-M6 (Distance Field Mesh Collision) complete and verified. Next is M7 (Colored Gauss-Seidel + Bending).
+M7 (Colored Gauss-Seidel + Bending) complete — builds clean via CLI; in-editor verification
+pending. Next is M8 (Debug Viz Polish + Profiling).
 
 ## Completed Work
 - M1: GPU integration + structured buffers + RDG + debug points.
@@ -19,10 +20,16 @@ M6 (Distance Field Mesh Collision) complete and verified. Next is M7 (Colored Ga
 - M4: normal-dependent aerodynamic wind + turbulence in the Predict pass (GPU normals).
 - M5: sphere/capsule collision (`ClothCollision.usf`) + friction; editable collider slots.
 - M6: distance-field collision vs any scene mesh (`ClothCollisionDF.usf` + `FClothSceneViewExtension`).
+- M7: graph-colored Gauss-Seidel solver (`ClothSolveGaussSeidel.usf`) over an explicit, CPU-colored
+  constraint buffer + bending constraints; `EClothSolverMode` toggles vs the Jacobi baseline.
 
 ## Current Technical Decisions
 - PBD/XPBD; velocity derived from position delta.
-- Solver = Jacobi per-particle gather of grid neighbours (no atomics). Gauss-Seidel later (M6).
+- Two solvers (M7), runtime-switchable via `EClothSolverMode`:
+  - **Jacobi** per-particle gather of grid neighbours (no atomics) — baseline.
+  - **Graph-colored Gauss-Seidel** over an explicit constraint buffer — one thread/constraint, one
+    dispatch/color (disjoint writes within a color, RDG-serialized across colors) → faster
+    convergence; the only path with bending constraints.
 - Fixed-timestep accumulator (1/60 s) for frame-rate independence.
 - Sim in world space; converted to local for the mesh.
 - Rendering via readback → FLocalVertexFactory (reliable). Zero-copy is a future upgrade.
@@ -30,15 +37,17 @@ M6 (Distance Field Mesh Collision) complete and verified. Next is M7 (Colored Ga
 ## Known Issues
 - Default material one-sided → use a Two-Sided material to see both faces.
 - ~1–2 frame readback latency (cosmetic).
-- No collision yet → falls through floor (M5).
+- Floor/world collision = add a large sphere/capsule slot or enable `bUseDistanceFieldCollision`.
+- Constraint topology (incl. `bUseBending`/`BendStiffness`) is baked at `BeginPlay` → changing it
+  needs a replay. `SolverMode` and `Stiffness` are live.
 
 ## Important Files
-- `Plugins/ClothSim/Source/ClothSim/Private/ClothSimCompute.cpp` — shader classes + RDG dispatch.
-- `Plugins/ClothSim/Shaders/Private/ClothPredict|ClothSolveDistance|ClothCollision|ClothCollisionDF|ClothFinalize.usf` — sim.
+- `Plugins/ClothSim/Source/ClothSim/Private/ClothSimCompute.cpp` — shader classes + RDG dispatch (Jacobi & GS branches).
+- `Plugins/ClothSim/Shaders/Private/ClothPredict|ClothSolveDistance|ClothSolveGaussSeidel|ClothCollision|ClothCollisionDF|ClothFinalize.usf` — sim.
 - `Plugins/ClothSim/Source/ClothSim/Private/ClothSceneViewExtension.cpp` — GDF snapshot (M6).
-- `Plugins/ClothSim/Source/ClothSim/Private/ClothSimComponent.cpp` — component, topology, normals, update.
+- `Plugins/ClothSim/Source/ClothSim/Private/ClothSimComponent.cpp` — component, topology, constraint build+coloring, normals, update.
 - `Plugins/ClothSim/Source/ClothSim/Private/ClothMeshSceneProxy.cpp` — mesh rendering.
-- `Plugins/ClothSim/Source/ClothSim/Public/ClothSimResources.h` — `FClothSimParams`, `FClothRenderResources`.
+- `Plugins/ClothSim/Source/ClothSim/Public/ClothSimResources.h` — `FClothSimParams`, `FClothRenderResources`, `FGPUConstraint`, `FClothColorRange`.
 - `Plugins/ClothSim/Source/ClothSim/Private/ClothSimModule.cpp` — shader dir mapping.
 - `Docs/` — all project documentation.
 
@@ -59,16 +68,27 @@ M6 (Distance Field Mesh Collision) complete and verified. Next is M7 (Colored Ga
   snapshots it. The DF shader binds a View UB only to satisfy transitive `ResolvedView` refs; GDF
   inputs come from `FGlobalDistanceFieldParameters2` (standalone/non-material path).
 
+## Gauss-Seidel + Bending Notes (M7)
+- `UClothSimComponent::BuildConstraints` (game thread, at `BeginPlay`) emits structural/shear/
+  bending edges, greedily graph-colors them, and sorts them into a color-contiguous
+  `FGPUConstraint` buffer + `FClothColorRange[]`. Uploaded once to a persistent pooled buffer.
+- `ClothSolveGaussSeidel.usf` = one thread per constraint; the dispatcher loops
+  `Iterations × Colors`, one pass per color. Race-free within a color; RDG serializes colors.
+- `SolverMode` (Details → ClothSim|Solver) switches Jacobi ↔ Gauss-Seidel live. Bending only
+  exists in the GS path; tune with `bUseBending` + `BendStiffness` (relative, ×global Stiffness).
+- **To verify in-editor:** Play, set `SolverMode = Gauss-Seidel`; with fewer `SolverIterations`
+  (e.g. 2–4) the cloth should hold its shape better than Jacobi at the same count. Toggle
+  `bUseBending` and fold the cloth to see crease resistance.
+
 ## Immediate Next Task
-**M7 — Colored Gauss-Seidel + Bending.** Build an explicit distance-constraint buffer (idxA,
-idxB, restLength) and partition it into colors on the CPU (no two constraints in a color share a
-particle). Replace/augment the Jacobi gather solver with per-color Gauss-Seidel dispatches
-(faster convergence). Add bending constraints (distance to the 2-away neighbour, or dihedral) to
-resist sharp folds. Keep the Jacobi path available for comparison/profiling (M8).
+**M8 — Debug Viz Polish + Profiling.** Add GPU-resident debug draws (per-particle/per-constraint,
+e.g. strain/stretch coloring), capture `stat GPU` / Unreal Insights timings, and produce a
+**Jacobi vs Gauss-Seidel** comparison (iterations-to-converge and ms/frame) plus a
+resolution-vs-ms graph for the portfolio. All the hooks exist; this is measurement + presentation.
 
 ## Recommended Prompt For Future Claude Sessions
 > "Read `Docs/HANDOFF.md`, `Docs/PROJECT_STATE.md`, and `Docs/ARCHITECTURE.md` to load context.
-> This is a from-scratch GPU cloth sim in UE 5.7 (plugin `ClothSim`). M1–M3 are done. Continue
+> This is a from-scratch GPU cloth sim in UE 5.7 (plugin `ClothSim`). M1–M7 are done. Continue
 > with the milestone listed under 'Immediate Next Task', following the workflow in
 > `Docs/` (update PROJECT_STATE, DEVLOG, ROADMAP, HANDOFF, PORTFOLIO_NOTES + commit per
 > milestone). Build via the CLI command in HANDOFF; close the editor first (Live Coding lock)."

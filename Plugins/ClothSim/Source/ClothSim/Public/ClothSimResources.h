@@ -27,6 +27,28 @@ struct FGPUCollider
 	float     Friction = 0.0f; // [0..1] tangential velocity damping on contact
 };
 
+/**
+ * One explicit distance constraint, as the GPU Gauss-Seidel solver sees it (M7).
+ * A and B are particle indices; the solver projects them back to RestLength apart.
+ * StiffScale is a per-constraint relative stiffness (1 for structural/shear, lower
+ * for bending) that is multiplied by the global Stiffness uniform. Must match the
+ * HLSL `FConstraint` struct in ClothSolveGaussSeidel.usf (16 bytes, tight layout).
+ */
+struct FGPUConstraint
+{
+	uint32 IndexA = 0;
+	uint32 IndexB = 0;
+	float  RestLength = 0.0f;
+	float  StiffScale = 1.0f;
+};
+
+/** Contiguous [Start, Count) span of one color within the sorted constraint buffer. */
+struct FClothColorRange
+{
+	int32 Start = 0;
+	int32 Count = 0;
+};
+
 struct FClothSimParams
 {
 	int32   NumParticles = 0;
@@ -43,6 +65,11 @@ struct FClothSimParams
 	float   Stiffness = 1.0f;      // [0,1] correction scale
 	float   RestStructural = 5.0f; // adjacent-particle rest length (= Spacing)
 	float   RestShear = 7.0710678f;// diagonal rest length (= Spacing * sqrt(2))
+
+	// Solver method (M7). false = Jacobi per-particle gather (baseline, structural+shear
+	// from grid neighbours). true = graph-colored Gauss-Seidel over the explicit
+	// constraint buffer (structural+shear+bending; faster convergence).
+	bool    bUseGaussSeidel = false;
 
 	// Wind (M4)
 	FVector3f WindVelocity = FVector3f::ZeroVector; // base air velocity (cm/s), world space
@@ -77,6 +104,13 @@ struct FClothRenderResources
 	TRefCountPtr<FRDGPooledBuffer> VelocitiesBuffer;
 	TRefCountPtr<FRDGPooledBuffer> InvMassBuffer;
 
+	// Explicit distance constraints + their graph coloring (M7, Gauss-Seidel path).
+	// Built once at init; static for the cloth's lifetime. The buffer is sorted by
+	// color so each ColorRange is a contiguous, race-free batch of constraints.
+	TRefCountPtr<FRDGPooledBuffer> ConstraintsBuffer;
+	int32 NumConstraints = 0;
+	TArray<FClothColorRange> ColorRanges;
+
 	int32 NumParticles = 0;
 	bool  bInitialized = false;
 
@@ -106,13 +140,16 @@ struct FClothRenderResources
  */
 namespace ClothSimCompute
 {
-	/** One-time: create pooled buffers and upload the initial particle grid. */
+	/** One-time: create pooled buffers and upload the initial particle grid + constraints.
+	 *  Constraints must already be sorted by color; ColorRanges indexes into them. */
 	void InitResources_RenderThread(
 		FRHICommandListImmediate& RHICmdList,
 		const TSharedPtr<FClothRenderResources>& Resources,
 		const TArray<FVector3f>& InitialPositions,
 		const TArray<FVector3f>& InitialVelocities,
-		const TArray<float>& InitialInvMasses);
+		const TArray<float>& InitialInvMasses,
+		const TArray<FGPUConstraint>& Constraints,
+		const TArray<FClothColorRange>& ColorRanges);
 
 	/** Per-frame: run the integration compute pass and kick a debug readback. */
 	void Dispatch_RenderThread(

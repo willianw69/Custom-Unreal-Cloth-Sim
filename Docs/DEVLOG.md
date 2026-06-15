@@ -172,3 +172,42 @@ arbitrary geometry. Highest portfolio value of the project.
 particle. GDF is coarse, so collision is approximate on small/thin meshes.
 
 **Next:** M7 — colored Gauss-Seidel solver + bending constraints.
+
+---
+
+## 2026-06-15 — M7: Colored Gauss-Seidel + Bending
+**What:** Added a second distance solver alongside the M2 Jacobi gather. On `BeginPlay` the
+component now builds an **explicit constraint buffer** (`FGPUConstraint{IndexA, IndexB,
+RestLength, StiffScale}`): structural (rest=`Spacing`), shear (rest=`Spacing·√2`), and optional
+**bending** (2-away neighbour, rest=`2·Spacing`, softer via `BendStiffness`). The constraints are
+**greedy graph-colored** on the CPU so no two constraints in a color share a particle, then sorted
+into a color-contiguous buffer with per-color `[Start,Count)` ranges. The new
+`ClothSolveGaussSeidel.usf` runs **one thread per constraint**, projecting BOTH endpoints in place;
+the dispatch loop issues **one pass per color** so within a pass writes are disjoint (race-free)
+and across passes each color sees the previous color's corrections (true Gauss-Seidel). New
+`EClothSolverMode` (Jacobi / Gauss-Seidel) toggles between paths at runtime for A/B comparison.
+
+**Why:** Gauss-Seidel propagates corrections within a single iteration (no Jacobi
+under-relaxation), so the cloth reaches a given stiffness in far fewer iterations. The explicit
+constraint model also generalizes past the regular-grid neighbour assumption and is the natural
+home for bending constraints, which stop the cloth folding to a crease.
+
+**Problems & solutions:**
+- *Race-free parallel Gauss-Seidel:* the whole point of graph coloring. Greedy coloring assigns
+  each edge the smallest color absent from both endpoints' used-color sets (`TSet` per particle).
+  A 32×32 grid with all three constraint families colors into a modest number of colors; each is a
+  contiguous slice dispatched independently. RDG serializes the per-color UAV read-modify-write, so
+  color *k+1* sees color *k*'s output without explicit barriers.
+- *In-place vs ping-pong:* GS solves in place on a single predicted buffer (no `PredictedB`);
+  Jacobi keeps the two-buffer ping-pong. Both paths converge on `In` so the existing
+  Collision → DF → Finalize tail is unchanged.
+- *Runtime vs build-time params:* `SolverMode` and global `Stiffness` are live; bending topology
+  and `BendStiffness` are baked into the constraint buffer at `BeginPlay` (like grid params), so
+  toggling `bUseBending` takes effect on the next play.
+
+**Performance:** GS issues `Iterations × NumColors` small dispatches/substep (vs Jacobi's
+`Iterations`), but converges in fewer iterations for equivalent stiffness; each constraint touches
+exactly 2 particles (vs the gather's up-to-8 reads). Negligible at 1024 particles; the
+iteration-count win is the real lever. Proper `stat GPU` comparison is the M8 profiling pass.
+
+**Next:** M8 — debug-viz polish + profiling (Jacobi vs Gauss-Seidel convergence/ms capture).

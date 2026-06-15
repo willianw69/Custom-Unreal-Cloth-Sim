@@ -63,6 +63,23 @@ transitively requires the View uniform buffer.
 `PostRenderBasePassDeferred`; `ClothCollisionDF.usf` samples `GetDistanceToNearestSurfaceGlobal`
 and the gradient to push particles out of any scene mesh, with tangential friction.
 
+## M7 — Graph-Colored Gauss-Seidel Solver + Bending
+**Technical challenges:** Running **Gauss-Seidel** (not Jacobi) distance constraints in parallel on
+the GPU — which is inherently sequential — without data races. Solved it with **CPU graph coloring**:
+partition constraints so no two in a color share a particle, then dispatch one color at a time;
+within a color all writes are disjoint, and across colors RDG serializes the read-modify-write so
+later corrections build on earlier ones (true Gauss-Seidel propagation, faster convergence than the
+Jacobi gather's under-relaxed averaging). Moved from an implicit grid-neighbour solver to an
+**explicit constraint buffer**, which both generalizes the topology and provides the natural home
+for bending constraints (2-away distance) that resist creasing. Kept the Jacobi path live behind a
+runtime toggle for direct comparison.
+**Technologies:** Graph coloring, parallel Gauss-Seidel, Position Based Dynamics, HLSL compute,
+RDG UAV serialization, one-thread-per-constraint dispatch.
+**Implementation:** `BuildConstraints()` emits structural/shear/bending edges + greedy coloring →
+color-sorted `FGPUConstraint` buffer + `[Start,Count)` ranges; `ClothSolveGaussSeidel.usf` projects
+both endpoints of each constraint in place; the dispatcher loops `Iterations × Colors`.
+`EClothSolverMode` switches Jacobi ↔ Gauss-Seidel at runtime.
+
 ---
 
 ## Portfolio Talking Points
@@ -86,11 +103,19 @@ and the gradient to push particles out of any scene mesh, with tangential fricti
 - "Integrated Unreal's Global Distance Field into a custom compute pass (via a SceneViewExtension)
   so GPU cloth collides against arbitrary scene meshes — the technique Niagara uses for particle
   collision."
+- "Implemented a graph-colored parallel Gauss-Seidel constraint solver on the GPU — CPU coloring
+  guarantees race-free in-place projection per color while RDG serialization preserves Gauss-Seidel
+  ordering — plus bending constraints, with the Jacobi solver retained behind a runtime toggle for
+  convergence comparison."
 
 ## Interview Discussion Points
 - Why PBD/XPBD over mass-spring; why velocity is derived from position deltas (stability).
 - The parallel-solve data race and why per-particle gather (Jacobi) avoids it without atomics;
-  the convergence trade-off vs graph-colored Gauss-Seidel.
+  the convergence trade-off vs graph-colored Gauss-Seidel — and how graph coloring + RDG UAV
+  serialization makes Gauss-Seidel safe AND parallel (disjoint writes per color, ordered across
+  colors).
+- Why bending constraints (2-away distance) are needed and where they sit in the constraint graph;
+  per-constraint relative stiffness vs a single global stiffness.
 - Why fixed timestep matters for deterministic, frame-rate-independent physics.
 - CPU/GPU threading model in UE (game vs render thread, RDG, pooled vs transient buffers).
 - Readback vs zero-copy vertex rendering trade-offs.

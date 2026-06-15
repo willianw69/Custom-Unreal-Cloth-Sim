@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Project progress tracker. ✅ Completed · 🔄 In Progress · ⏳ Planned
-> Last updated: 2026-06-12 (after M6).
+> Last updated: 2026-06-15 (after M7).
 
 | Milestone | Title | Status |
 |---|---|---|
@@ -11,7 +11,7 @@
 | M4 | Wind Forces | ✅ |
 | M5 | Sphere & Capsule Collision | ✅ |
 | M6 | Distance Field Mesh Collision | ✅ |
-| M7 | Colored Gauss-Seidel + Bending | ⏳ |
+| M7 | Colored Gauss-Seidel + Bending | ✅ |
 | M8 | Debug Viz Polish + Profiling | ⏳ |
 | M+ | Zero-copy GPU Rendering Path | ⏳ (stretch) |
 
@@ -51,9 +51,12 @@ snapshots GDF params + view uniform buffer (`PostRenderBasePassDeferred`); `Clot
 samples the field + gradient to project particles out. Toggle `bUseDistanceFieldCollision`.
 Requires "Generate Mesh Distance Fields" + a GDF consumer (forced via DFAO cvars).
 
-### M7 — Colored Gauss-Seidel + Bending ⏳
-Explicit constraint buffer + CPU graph coloring → parallel Gauss-Seidel (faster convergence).
-Add bending/dihedral constraints to resist sharp folds.
+### M7 — Colored Gauss-Seidel + Bending ✅
+Explicit `FGPUConstraint` buffer (structural + shear + bending) + greedy CPU graph coloring →
+`ClothSolveGaussSeidel.usf` runs one thread per constraint, one dispatch per color (race-free
+in place; RDG serializes colors → true Gauss-Seidel). Bending = 2-away distance constraint with
+relative `BendStiffness`. `EClothSolverMode` toggles Jacobi ↔ Gauss-Seidel at runtime; the M2
+Jacobi gather is retained as the baseline for the M8 profiling comparison.
 
 ### M8 — Debug Viz Polish + Profiling ⏳
 GPU-resident particle/constraint debug draws (strain coloring), Unreal Insights / `stat GPU`

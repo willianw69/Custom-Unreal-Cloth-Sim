@@ -7,6 +7,8 @@
 #include "ClothSimComponent.generated.h"
 
 struct FClothRenderResources;
+struct FGPUConstraint;
+struct FClothColorRange;
 class FClothMeshSceneProxy;
 class UMaterialInterface;
 
@@ -15,6 +17,16 @@ enum class EClothColliderType : uint8
 {
 	Sphere,
 	Capsule
+};
+
+/** Which GPU distance solver to run (M7). */
+UENUM(BlueprintType)
+enum class EClothSolverMode : uint8
+{
+	/** Per-particle gather of grid neighbours, Jacobi-averaged. Baseline (M2). */
+	Jacobi			UMETA(DisplayName = "Jacobi (gather)"),
+	/** Graph-colored Gauss-Seidel over the explicit constraint buffer. Faster convergence (M7). */
+	GaussSeidel		UMETA(DisplayName = "Gauss-Seidel (colored)")
 };
 
 /** A single collider authored in the Details panel (transform relative to the component). */
@@ -136,6 +148,25 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.0"))
 	float DistanceFieldThickness = 2.0f;
 
+	/**
+	 * Distance solver method. Jacobi = per-particle neighbour gather (baseline).
+	 * Gauss-Seidel = graph-colored explicit constraints (faster convergence, and the
+	 * only path that includes bending). Switchable at runtime for side-by-side comparison.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Solver")
+	EClothSolverMode SolverMode = EClothSolverMode::GaussSeidel;
+
+	/**
+	 * Add bending constraints (distance to the 2-away neighbour) so the cloth resists
+	 * sharp folds. Only active in the Gauss-Seidel path. Built at BeginPlay.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Solver")
+	bool bUseBending = true;
+
+	/** Relative stiffness of bending constraints [0..1] vs structural/shear. Built at BeginPlay. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Solver", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float BendStiffness = 0.2f;
+
 	/** Substeps per frame. The biggest stability lever: more = stiffer, more stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Solver", meta = (ClampMin = "1", ClampMax = "16"))
 	int32 Substeps = 2;
@@ -189,6 +220,10 @@ private:
 
 	/** Build the static triangle list + UVs for the grid. */
 	void BuildTopology();
+
+	/** Build the explicit distance constraints (structural + shear + optional bending) and
+	 *  greedily graph-color them, producing a color-sorted buffer + per-color ranges (M7). */
+	void BuildConstraints(TArray<FGPUConstraint>& OutConstraints, TArray<FClothColorRange>& OutColorRanges) const;
 
 	/** Compute smooth per-vertex normals and tangents from grid positions (local space). */
 	void ComputeGridNormalsTangents(

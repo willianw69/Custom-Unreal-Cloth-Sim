@@ -1,7 +1,7 @@
 # PROJECT_STATE.md
 
 > Single source of truth for current project status. Update after every milestone.
-> Last updated: 2026-06-12 (after M6).
+> Last updated: 2026-06-15 (after M7).
 
 ## Project Overview
 Real-time **GPU cloth simulation built from scratch** in **Unreal Engine 5.7**, as a
@@ -14,9 +14,9 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
 - **Engine install:** `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-**M6 — Distance Field Mesh Collision: COMPLETE and verified in-editor.**
-(M6 was reassigned from "Gauss-Seidel + bending" to distance-field collision at the user's
-request; the solver upgrade moves to M7.)
+**M7 — Colored Gauss-Seidel + Bending: COMPLETE (builds clean; pending in-editor verification).**
+Explicit constraint buffer + CPU graph coloring drive a parallel Gauss-Seidel solver; bending
+constraints added; Jacobi retained behind a runtime toggle.
 
 ## Completed Milestones
 - **M1 — Particle Simulation.** GPU integration (gravity + damping), structured buffers,
@@ -38,14 +38,20 @@ request; the solver upgrade moves to M7.)
   Distance Field. A SceneViewExtension snapshots the GDF params + view uniform buffer each frame;
   `ClothCollisionDF.usf` samples `GetDistanceToNearestSurfaceGlobal` + gradient to push particles
   out of arbitrary geometry. Toggle `bUseDistanceFieldCollision`.
+- **M7 — Colored Gauss-Seidel + Bending.** Explicit `FGPUConstraint` buffer (structural + shear +
+  bending), greedy graph-colored on the CPU so each color is a race-free batch.
+  `ClothSolveGaussSeidel.usf` projects one constraint per thread, one dispatch per color (RDG
+  serializes colors → true Gauss-Seidel ordering, faster convergence than the Jacobi gather).
+  Bending = 2-away distance constraint with relative `BendStiffness`. `EClothSolverMode` toggles
+  Jacobi ↔ Gauss-Seidel at runtime; Jacobi is kept as the profiling baseline.
 
 ## In-Progress Work
 - None (between milestones).
 
 ## Next Milestone
-**M7 — Colored Gauss-Seidel + Bending.** Build an explicit constraint buffer + CPU graph coloring
-to run parallel Gauss-Seidel (faster convergence than the current Jacobi gather). Add
-bending/dihedral constraints so the cloth resists sharp folds.
+**M8 — Debug Viz Polish + Profiling.** GPU-resident particle/constraint debug draws (e.g. strain
+coloring), Unreal Insights / `stat GPU` captures, and a Jacobi-vs-Gauss-Seidel
+convergence-and-ms comparison for the portfolio.
 
 ## Technical Decisions
 - **Wind model:** normal-dependent aerodynamic drag computed in the Predict pass; per-particle
@@ -58,9 +64,15 @@ bending/dihedral constraints so the cloth resists sharp folds.
   needs the `View` UB (for `ResolvedView`), so we also snapshot `FSceneView::ViewUniformBuffer` and
   bind it. Sampling uses translated world space (world + cached PreViewTranslation). A 1-frame lag
   between the SVE snapshot and the (separately-enqueued) sim is harmless.
-- **Solver model:** XPBD/PBD. Velocity is derived from the position delta (stable).
-- **Parallelism:** Jacobi via **per-particle gather** of grid neighbours (no atomics, no
-  races). Graph-colored Gauss-Seidel deferred to M6.
+- **Solver model:** XPBD/PBD. Velocity is derived from the position delta (stable). Two
+  interchangeable solvers (M7): **Jacobi gather** (per-particle, structural+shear) and
+  **graph-colored Gauss-Seidel** (explicit constraint buffer, structural+shear+bending).
+- **Parallelism:** Jacobi via **per-particle gather** of grid neighbours (no atomics, no races).
+  Gauss-Seidel via **CPU graph coloring** → one thread per constraint, one dispatch per color:
+  writes are disjoint within a color (race-free) and RDG serializes color N+1 after N, preserving
+  Gauss-Seidel ordering. No under-relaxation needed → faster convergence.
+- **Bending:** distance constraint to the 2-away neighbour (rest = 2·Spacing), with a relative
+  `BendStiffness` baked per constraint and scaled by the global `Stiffness` uniform. GS path only.
 - **Timestep:** fixed-step accumulator (default 1/60 s) → frame-rate independent.
 - **Rendering:** reliable path = `FLocalVertexFactory` updated from a small CPU readback
   (negligible at current vertex counts). Zero-copy GPU vertex write is a planned upgrade.
@@ -77,14 +89,19 @@ bending/dihedral constraints so the cloth resists sharp folds.
 ## Known Limitations
 - Collision is against authored sphere/capsule slots only (no floor/world geometry, no
   self-collision). Floor = add a large sphere/capsule for now.
-- No bending constraints → cloth can fold sharply (M6).
-- Solver assumes a **regular grid** (neighbours computed from grid coords), not an arbitrary mesh.
+- Bending constraints exist in the Gauss-Seidel path only; the Jacobi gather is structural+shear.
+- The **Jacobi** solver assumes a **regular grid** (neighbours from grid coords); the Gauss-Seidel
+  path uses an explicit constraint buffer and is not grid-bound, but the constraints are still
+  *generated* from the grid topology.
+- Constraint topology (incl. bending on/off) is baked at `BeginPlay`; changing `bUseBending`/
+  `BendStiffness` requires a replay (grid params already behave this way).
 - Normals computed on CPU (M3 reliable path), not GPU.
 - Rendering is readback-based, not zero-copy.
 
 ## Future Improvements
 - Zero-copy GPU vertex write (compute → UAV vertex buffers, custom vertex factory).
-- Graph-colored Gauss-Seidel solver (faster convergence) + bending/dihedral constraints.
+- True **dihedral** bending (angle-based) instead of the current 2-away distance approximation;
+  XPBD compliance per constraint instead of a clamped PBD stiffness scale.
 - GPU normals pass.
 - Sphere/capsule (M5) and self-collision.
 - Profiling pass with Unreal Insights / `stat GPU` capture for the portfolio.

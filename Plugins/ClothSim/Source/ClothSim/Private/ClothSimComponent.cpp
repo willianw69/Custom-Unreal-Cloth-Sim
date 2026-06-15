@@ -72,6 +72,120 @@ void UClothSimComponent::BuildTopology()
 	}
 }
 
+void UClothSimComponent::BuildConstraints(
+	TArray<FGPUConstraint>& OutConstraints,
+	TArray<FClothColorRange>& OutColorRanges) const
+{
+	OutConstraints.Reset();
+	OutColorRanges.Reset();
+
+	// --- 1. Gather edges (structural + shear + optional bending) -------------
+	// Each edge stored once. RestLength from Spacing; StiffScale is the relative
+	// stiffness applied on top of the global Stiffness uniform in the shader.
+	const float RestStruct = Spacing;
+	const float RestShear  = Spacing * FMath::Sqrt(2.0f);
+	const float RestBend   = Spacing * 2.0f;
+
+	TArray<FGPUConstraint> Edges;
+	Edges.Reserve(NumParticles * 6);
+
+	auto AddEdge = [&](int32 Ax, int32 Ay, int32 Bx, int32 By, float Rest, float StiffScale)
+	{
+		const uint32 A = (uint32)(Ay * GridWidth + Ax);
+		const uint32 B = (uint32)(By * GridWidth + Bx);
+		Edges.Add(FGPUConstraint{ A, B, Rest, StiffScale });
+	};
+
+	for (int32 Y = 0; Y < GridHeight; ++Y)
+	{
+		for (int32 X = 0; X < GridWidth; ++X)
+		{
+			// Structural: right + down (each edge added once).
+			if (X + 1 < GridWidth)  AddEdge(X, Y, X + 1, Y,     RestStruct, 1.0f);
+			if (Y + 1 < GridHeight) AddEdge(X, Y, X,     Y + 1, RestStruct, 1.0f);
+
+			// Shear: both diagonals of the cell with this particle as its top-left.
+			if (X + 1 < GridWidth && Y + 1 < GridHeight)
+			{
+				AddEdge(X,     Y, X + 1, Y + 1, RestShear, 1.0f); // ↘
+				AddEdge(X + 1, Y, X,     Y + 1, RestShear, 1.0f); // ↙
+			}
+
+			// Bending: 2-away neighbour, right + down (softer).
+			if (bUseBending)
+			{
+				if (X + 2 < GridWidth)  AddEdge(X, Y, X + 2, Y,     RestBend, BendStiffness);
+				if (Y + 2 < GridHeight) AddEdge(X, Y, X,     Y + 2, RestBend, BendStiffness);
+			}
+		}
+	}
+
+	if (Edges.Num() == 0)
+	{
+		return;
+	}
+
+	// --- 2. Greedy graph coloring -------------------------------------------
+	// Two constraints conflict if they share a particle. We assign each edge the
+	// smallest color not yet used by either of its endpoints, so within a color no
+	// particle is touched twice -> the GPU can project a whole color in parallel
+	// with no data races. TSet<>-per-particle keeps the "colors used here" lookup O(1).
+	TArray<int32> EdgeColor;
+	EdgeColor.SetNumUninitialized(Edges.Num());
+
+	TArray<TSet<int32>> UsedColorsAt;
+	UsedColorsAt.SetNum(NumParticles);
+
+	int32 NumColors = 0;
+	for (int32 e = 0; e < Edges.Num(); ++e)
+	{
+		const int32 A = (int32)Edges[e].IndexA;
+		const int32 B = (int32)Edges[e].IndexB;
+
+		int32 Color = 0;
+		while (UsedColorsAt[A].Contains(Color) || UsedColorsAt[B].Contains(Color))
+		{
+			++Color;
+		}
+
+		EdgeColor[e] = Color;
+		UsedColorsAt[A].Add(Color);
+		UsedColorsAt[B].Add(Color);
+		NumColors = FMath::Max(NumColors, Color + 1);
+	}
+
+	// --- 3. Bucket edges into a color-sorted buffer + ranges ----------------
+	TArray<int32> CountPerColor;
+	CountPerColor.Init(0, NumColors);
+	for (int32 e = 0; e < Edges.Num(); ++e)
+	{
+		++CountPerColor[EdgeColor[e]];
+	}
+
+	OutColorRanges.SetNum(NumColors);
+	int32 Running = 0;
+	for (int32 c = 0; c < NumColors; ++c)
+	{
+		OutColorRanges[c].Start = Running;
+		OutColorRanges[c].Count = CountPerColor[c];
+		Running += CountPerColor[c];
+	}
+
+	// Stable scatter into the sorted positions using a per-color write cursor.
+	OutConstraints.SetNumUninitialized(Edges.Num());
+	TArray<int32> Cursor;
+	Cursor.SetNumUninitialized(NumColors);
+	for (int32 c = 0; c < NumColors; ++c)
+	{
+		Cursor[c] = OutColorRanges[c].Start;
+	}
+	for (int32 e = 0; e < Edges.Num(); ++e)
+	{
+		const int32 c = EdgeColor[e];
+		OutConstraints[Cursor[c]++] = Edges[e];
+	}
+}
+
 void UClothSimComponent::InitializeSimulation()
 {
 	GridWidth  = FMath::Clamp(GridWidth, 2, 256);
@@ -118,14 +232,20 @@ void UClothSimComponent::InitializeSimulation()
 	Box = Box.ExpandBy(Margin);
 	LocalBounds = FBoxSphereBounds(Box);
 
+	// Explicit constraints + graph coloring for the Gauss-Seidel solver (M7).
+	TArray<FGPUConstraint>   Constraints;
+	TArray<FClothColorRange> ColorRanges;
+	BuildConstraints(Constraints, ColorRanges);
+
 	RenderResources = MakeShared<FClothRenderResources>();
 
 	TSharedPtr<FClothRenderResources> Resources = RenderResources;
 	ENQUEUE_RENDER_COMMAND(ClothSimInit)(
-		[Resources, Positions = MoveTemp(Positions), Velocities = MoveTemp(Velocities), InvMasses = MoveTemp(InvMasses)]
+		[Resources, Positions = MoveTemp(Positions), Velocities = MoveTemp(Velocities), InvMasses = MoveTemp(InvMasses),
+		 Constraints = MoveTemp(Constraints), ColorRanges = MoveTemp(ColorRanges)]
 		(FRHICommandListImmediate& RHICmdList)
 		{
-			ClothSimCompute::InitResources_RenderThread(RHICmdList, Resources, Positions, Velocities, InvMasses);
+			ClothSimCompute::InitResources_RenderThread(RHICmdList, Resources, Positions, Velocities, InvMasses, Constraints, ColorRanges);
 		});
 }
 
@@ -206,6 +326,7 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	Params.Stiffness        = Stiffness;
 	Params.RestStructural   = Spacing;
 	Params.RestShear        = Spacing * FMath::Sqrt(2.0f);
+	Params.bUseGaussSeidel  = (SolverMode == EClothSolverMode::GaussSeidel);
 
 	// Wind (M4).
 	Params.WindVelocity   = FVector3f(WindDirection.GetSafeNormal() * WindStrength);

@@ -82,6 +82,34 @@ public:
 	}
 };
 
+// Graph-colored Gauss-Seidel distance solve: one thread per constraint, one dispatch
+// per color, projecting both endpoints in place (M7).
+class FClothSolveGaussSeidelCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FClothSolveGaussSeidelCS);
+	SHADER_USE_PARAMETER_STRUCT(FClothSolveGaussSeidelCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FGPUConstraint>, Constraints)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float>, InvMasses)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float3>, Positions)
+		SHADER_PARAMETER(uint32, ColorStart)
+		SHADER_PARAMETER(uint32, ColorCount)
+		SHADER_PARAMETER(float, Stiffness)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), kThreadGroupSize);
+	}
+};
+
 class FClothFinalizeCS : public FGlobalShader
 {
 public:
@@ -171,6 +199,7 @@ IMPLEMENT_GLOBAL_SHADER(FClothPredictCS,        "/ClothSim/Private/ClothPredict.
 IMPLEMENT_GLOBAL_SHADER(FClothCollisionCS,      "/ClothSim/Private/ClothCollision.usf",      "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothCollisionDFCS,    "/ClothSim/Private/ClothCollisionDF.usf",    "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothSolveDistanceCS,  "/ClothSim/Private/ClothSolveDistance.usf",  "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FClothSolveGaussSeidelCS,"/ClothSim/Private/ClothSolveGaussSeidel.usf","MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothFinalizeCS,       "/ClothSim/Private/ClothFinalize.usf",       "MainCS", SF_Compute);
 
 //////////////////////////////////////////////////////////////////////////
@@ -193,7 +222,9 @@ void ClothSimCompute::InitResources_RenderThread(
 	const TSharedPtr<FClothRenderResources>& Resources,
 	const TArray<FVector3f>& InitialPositions,
 	const TArray<FVector3f>& InitialVelocities,
-	const TArray<float>& InitialInvMasses)
+	const TArray<float>& InitialInvMasses,
+	const TArray<FGPUConstraint>& Constraints,
+	const TArray<FClothColorRange>& ColorRanges)
 {
 	check(IsInRenderingThread());
 	check(Resources.IsValid());
@@ -222,6 +253,18 @@ void ClothSimCompute::InitResources_RenderThread(
 	GraphBuilder.QueueBufferExtraction(Positions, &Resources->PositionsBuffer);
 	GraphBuilder.QueueBufferExtraction(Velocities, &Resources->VelocitiesBuffer);
 	GraphBuilder.QueueBufferExtraction(InvMasses, &Resources->InvMassBuffer);
+
+	// Constraint buffer for the Gauss-Seidel path (M7), sorted by color on the CPU.
+	Resources->NumConstraints = Constraints.Num();
+	Resources->ColorRanges = ColorRanges;
+	if (Constraints.Num() > 0)
+	{
+		FRDGBufferRef ConstraintsBuf = CreateStructuredBuffer(
+			GraphBuilder, TEXT("Cloth.Constraints"),
+			sizeof(FGPUConstraint), Constraints.Num(),
+			Constraints.GetData(), sizeof(FGPUConstraint) * Constraints.Num());
+		GraphBuilder.QueueBufferExtraction(ConstraintsBuf, &Resources->ConstraintsBuffer);
+	}
 
 	GraphBuilder.Execute();
 
@@ -296,12 +339,28 @@ void ClothSimCompute::Dispatch_RenderThread(
 	const FClothGDFCache& GDFCache = ClothGDF::Get();
 	const bool bDoDistanceField = Params.bUseDistanceFieldCollision && GDFCache.bValid;
 
+	// Gauss-Seidel path (M7): use the explicit, color-sorted constraint buffer when
+	// requested and available. Falls back to the Jacobi gather otherwise.
+	const bool bDoGaussSeidel = Params.bUseGaussSeidel
+		&& Resources->NumConstraints > 0
+		&& Resources->ConstraintsBuffer.IsValid()
+		&& Resources->ColorRanges.Num() > 0;
+
+	FRDGBufferSRVRef ConstraintsSRV = nullptr;
+	if (bDoGaussSeidel)
+	{
+		FRDGBufferRef ConstraintsBuf = GraphBuilder.RegisterExternalBuffer(
+			Resources->ConstraintsBuffer, TEXT("Cloth.Constraints"));
+		ConstraintsSRV = GraphBuilder.CreateSRV(ConstraintsBuf);
+	}
+
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-	TShaderMapRef<FClothPredictCS>       PredictCS(ShaderMap);
-	TShaderMapRef<FClothSolveDistanceCS> SolveCS(ShaderMap);
-	TShaderMapRef<FClothCollisionCS>     CollisionCS(ShaderMap);
-	TShaderMapRef<FClothCollisionDFCS>   CollisionDFCS(ShaderMap);
-	TShaderMapRef<FClothFinalizeCS>      FinalizeCS(ShaderMap);
+	TShaderMapRef<FClothPredictCS>          PredictCS(ShaderMap);
+	TShaderMapRef<FClothSolveDistanceCS>    SolveCS(ShaderMap);
+	TShaderMapRef<FClothSolveGaussSeidelCS> GaussSeidelCS(ShaderMap);
+	TShaderMapRef<FClothCollisionCS>        CollisionCS(ShaderMap);
+	TShaderMapRef<FClothCollisionDFCS>      CollisionDFCS(ShaderMap);
+	TShaderMapRef<FClothFinalizeCS>         FinalizeCS(ShaderMap);
 
 	if (SubDt > 0.0f)
 	{
@@ -330,29 +389,67 @@ void ClothSimCompute::Dispatch_RenderThread(
 					PredictCS, P, GroupCount);
 			}
 
-			// --- Solve: ping-pong PredictedA <-> PredictedB ---
+			// --- Solve ---
+			// Two strategies share the same Predict/Collision/Finalize scaffolding;
+			// `In` ends up holding the latest solved positions either way.
 			FRDGBufferRef In = PredictedA;
-			FRDGBufferRef Out = PredictedB;
-			for (int32 Iter = 0; Iter < Iterations; ++Iter)
+
+			if (bDoGaussSeidel)
 			{
-				FClothSolveDistanceCS::FParameters* P = GraphBuilder.AllocParameters<FClothSolveDistanceCS::FParameters>();
-				P->PredictedIn     = GraphBuilder.CreateSRV(In);
-				P->InvMasses       = InvMassesSRV;
-				P->PredictedOut    = GraphBuilder.CreateUAV(Out);
-				P->NumParticles    = (uint32)Num;
-				P->GridWidth       = (uint32)Params.GridWidth;
-				P->GridHeight      = (uint32)Params.GridHeight;
-				P->RestStructural  = Params.RestStructural;
-				P->RestShear       = Params.RestShear;
-				P->Stiffness       = Params.Stiffness;
+				// Graph-colored Gauss-Seidel: solve in place on PredictedA. Within a
+				// color no two constraints share a particle (race-free UAV writes); each
+				// color reads the previous one's results (RDG serializes the UAV), giving
+				// true Gauss-Seidel propagation. No ping-pong needed.
+				for (int32 Iter = 0; Iter < Iterations; ++Iter)
+				{
+					for (int32 Color = 0; Color < Resources->ColorRanges.Num(); ++Color)
+					{
+						const FClothColorRange& Range = Resources->ColorRanges[Color];
+						if (Range.Count <= 0)
+						{
+							continue;
+						}
 
-				FComputeShaderUtils::AddPass(GraphBuilder,
-					RDG_EVENT_NAME("ClothSolveDistance (substep %d iter %d)", Step, Iter),
-					SolveCS, P, GroupCount);
+						FClothSolveGaussSeidelCS::FParameters* P = GraphBuilder.AllocParameters<FClothSolveGaussSeidelCS::FParameters>();
+						P->Constraints = ConstraintsSRV;
+						P->InvMasses   = InvMassesSRV;
+						P->Positions   = GraphBuilder.CreateUAV(In);
+						P->ColorStart  = (uint32)Range.Start;
+						P->ColorCount  = (uint32)Range.Count;
+						P->Stiffness   = Params.Stiffness;
 
-				Swap(In, Out);
+						FComputeShaderUtils::AddPass(GraphBuilder,
+							RDG_EVENT_NAME("ClothSolveGaussSeidel (substep %d iter %d color %d)", Step, Iter, Color),
+							GaussSeidelCS, P, FComputeShaderUtils::GetGroupCount(Range.Count, kThreadGroupSize));
+					}
+				}
+				// `In` (= PredictedA) holds the solved positions.
 			}
-			// After the loop, `In` holds the latest solved positions.
+			else
+			{
+				// Jacobi per-particle gather (baseline): ping-pong PredictedA <-> PredictedB.
+				FRDGBufferRef Out = PredictedB;
+				for (int32 Iter = 0; Iter < Iterations; ++Iter)
+				{
+					FClothSolveDistanceCS::FParameters* P = GraphBuilder.AllocParameters<FClothSolveDistanceCS::FParameters>();
+					P->PredictedIn     = GraphBuilder.CreateSRV(In);
+					P->InvMasses       = InvMassesSRV;
+					P->PredictedOut    = GraphBuilder.CreateUAV(Out);
+					P->NumParticles    = (uint32)Num;
+					P->GridWidth       = (uint32)Params.GridWidth;
+					P->GridHeight      = (uint32)Params.GridHeight;
+					P->RestStructural  = Params.RestStructural;
+					P->RestShear       = Params.RestShear;
+					P->Stiffness       = Params.Stiffness;
+
+					FComputeShaderUtils::AddPass(GraphBuilder,
+						RDG_EVENT_NAME("ClothSolveDistance (substep %d iter %d)", Step, Iter),
+						SolveCS, P, GroupCount);
+
+					Swap(In, Out);
+				}
+				// After the loop, `In` holds the latest solved positions.
+			}
 
 			// --- Collision: project predicted positions out of colliders + friction ---
 			if (CollidersSRV)

@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 
 > Technical system documentation. Update whenever the architecture changes.
-> Last updated: 2026-06-12 (after M6).
+> Last updated: 2026-06-15 (after M7).
 
 ## High-Level Architecture
 
@@ -11,7 +11,8 @@
   │ UClothSimComponent (UMeshComponent)      │   │ ClothSimCompute (RDG passes)         │
   │  - sim params (grid, gravity, solver)    │   │                                      │
   │  - fixed-timestep accumulator            │   │  Persistent pooled buffers:          │
-  │  - builds grid + topology + UVs          │──▶│   Positions, Velocities, InvMass     │
+  │  - builds grid + topology + UVs          │──▶│   Positions, Velocities, InvMass,    │
+  │  - builds + colors constraints (M7)      │   │   Constraints (color-sorted)         │
   │  - per fixed step: ENQUEUE dispatch ──────┼──▶│                                      │
   │  - reads readback → local verts+normals   │   │  Per frame / substep:                │
   │  - pushes verts to proxy ─────────────────┼──▶│   Predict → Solve(xN) → Finalize     │
@@ -32,10 +33,17 @@
 1. **Predict** (`ClothPredict.usf`): `v += gravity·dt`; **wind**: compute the particle's smooth
    normal from grid neighbours, then `v += WindDrag·dot(v_air − v, n)·n · dt` (v_air = wind +
    turbulence); then `v *= damping; predicted = x + v·dt`. Pinned particles keep their position.
-2. **Solve** (`ClothSolveDistance.usf`, ×`SolverIterations`): one thread per particle gathers
-   up to 8 grid neighbours (4 structural rest=`Spacing`, 4 shear rest=`Spacing·√2`), computes
-   each PBD distance correction, averages (Jacobi under-relaxation), writes its own slot.
-   Two predicted buffers are ping-ponged between iterations.
+2. **Solve** — one of two interchangeable strategies (`EClothSolverMode`, switchable at runtime):
+   - **Jacobi** (`ClothSolveDistance.usf`, ×`SolverIterations`): one thread per particle gathers
+     up to 8 grid neighbours (4 structural rest=`Spacing`, 4 shear rest=`Spacing·√2`), computes
+     each PBD distance correction, averages (Jacobi under-relaxation), writes its own slot. Two
+     predicted buffers are ping-ponged between iterations.
+   - **Gauss-Seidel** (`ClothSolveGaussSeidel.usf`, ×`SolverIterations` × `NumColors`): solves the
+     explicit, graph-colored constraint buffer **in place** on a single predicted buffer. One
+     thread per constraint projects BOTH endpoints (mass-weighted); the dispatcher issues one pass
+     per color. Within a color no constraint shares a particle (disjoint writes → race-free); RDG
+     serializes color N+1 after N so later colors see earlier corrections — true Gauss-Seidel, no
+     under-relaxation, faster convergence. Includes bending constraints (2-away, rest=`2·Spacing`).
 3. **Collision** (`ClothCollision.usf`, if any colliders): in place on the solved predicted
    buffer, push each penetrating particle out to the collider surface (capsule = segment+radius;
    sphere = degenerate), then damp the tangential part of its motion for friction.
@@ -44,6 +52,18 @@
    scene mesh. Binds the standalone GDF params + a snapshotted View uniform buffer.
 4. **Finalize** (`ClothFinalize.usf`): `v = (predicted − x)/dt; x = predicted`. Velocity is
    *derived* from the solved (and collided) motion — the source of PBD's stability.
+
+### Constraint coloring (M7, Gauss-Seidel path)
+Built once on the game thread in `UClothSimComponent::BuildConstraints`:
+1. Emit edges — structural (right/down), shear (both cell diagonals), and optional bending (2-away
+   right/down). Each is an `FGPUConstraint{IndexA, IndexB, RestLength, StiffScale}` (16 B).
+2. **Greedy graph coloring:** for each edge assign the smallest color not already used by either
+   endpoint (a `TSet<int32>` of used colors per particle). Constraints sharing a particle therefore
+   land in different colors.
+3. Bucket the edges into a single buffer **sorted by color**, recording a `[Start, Count)`
+   `FClothColorRange` per color. Buffer + ranges are uploaded/stored on `FClothRenderResources` at
+   init; the dispatcher walks the ranges every substep. `StiffScale` is 1 for structural/shear and
+   `BendStiffness` for bending, multiplied by the global `Stiffness` uniform (clamped) in the shader.
 
 ### Global Distance Field plumbing (M6)
 The GDF is renderer-owned and only valid during scene rendering, so a minimal
@@ -69,11 +89,18 @@ The DF shader uses the header's non-material branch, so GDF inputs come from
 FRDGBuilder
   RegisterExternalBuffer(Positions/Velocities/InvMass)   // persistent pooled buffers
   CreateBuffer(PredictedA), CreateBuffer(PredictedB)      // transient ping-pong
+  if GaussSeidel: RegisterExternalBuffer(Constraints)    // persistent, color-sorted
   for s in [0..Substeps):
       AddPass  ClothPredict           (Positions,Velocities,InvMass) -> PredictedA
-      In=A, Out=B
-      for it in [0..SolverIterations):
-          AddPass ClothSolveDistance  (PredictedIn,InvMass) -> PredictedOut ; swap(In,Out)
+      // --- Solve (one of two paths); `In` holds the result either way ---
+      if Jacobi:
+          In=A, Out=B
+          for it in [0..SolverIterations):
+              AddPass ClothSolveDistance     (PredictedIn,InvMass) -> PredictedOut ; swap(In,Out)
+      else GaussSeidel:                                  // in place on PredictedA (=In)
+          for it in [0..SolverIterations):
+              for c in [0..NumColors):
+                  AddPass ClothSolveGaussSeidel (Constraints[c range], InvMass, In[UAV])  // race-free
       if NumColliders: AddPass ClothCollision (In[UAV], PrevPos=Positions, Colliders)  // in place
       AddPass  ClothFinalize          (PredictedIn=In, InvMass) -> Positions, Velocities
   AddEnqueueCopyPass(PositionReadback, Positions)         // for debug + mesh render
@@ -86,7 +113,8 @@ GraphBuilder.Execute()
 | Positions | StructuredBuffer<float3> | persistent (pooled) | 12 B | world space |
 | Velocities | StructuredBuffer<float3> | persistent (pooled) | 12 B | cm/s |
 | InvMasses | StructuredBuffer<float> | persistent (pooled) | 4 B | 0 = pinned |
-| PredictedA/B | StructuredBuffer<float3> | transient (per frame) | 12 B | solver ping-pong |
+| PredictedA/B | StructuredBuffer<float3> | transient (per frame) | 12 B | Jacobi ping-pong; GS uses only A (in place) |
+| Constraints | StructuredBuffer<FGPUConstraint> | persistent (pooled) | 16 B | idxA,idxB,rest,stiffScale; color-sorted (GS) |
 | Colliders | StructuredBuffer<FCollider> | transient (per frame) | 32 B | A,radius,B,friction |
 | PositionReadback | FRHIGPUBufferReadback | persistent | — | non-stalling CPU copy |
 
@@ -101,7 +129,9 @@ via `FStaticMeshVertexBuffers` and are updated by CPU lock+memcpy.
 ## Shader Responsibilities
 - `ClothPredict.usf` — external forces (gravity + normal-dependent wind/drag + turbulence) and
   position prediction. Computes per-particle normals on the fly from grid neighbours.
-- `ClothSolveDistance.usf` — distance-constraint relaxation (Jacobi gather).
+- `ClothSolveDistance.usf` — distance-constraint relaxation (Jacobi per-particle gather).
+- `ClothSolveGaussSeidel.usf` — one constraint per thread over a color range; projects both
+  endpoints in place (graph-colored Gauss-Seidel, structural+shear+bending).
 - `ClothCollision.usf` — project predicted positions out of sphere/capsule colliders + friction.
 - `ClothFinalize.usf` — commit positions, derive velocity.
 - (Shader virtual path root `/ClothSim` → `Plugins/ClothSim/Shaders`, mapped at module
