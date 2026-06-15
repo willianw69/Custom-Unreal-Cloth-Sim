@@ -98,6 +98,23 @@ named passes give per-pass timings for the Jacobi-vs-Gauss-Seidel comparison.
 
 ---
 
+## M9 — GPU Self-Collision (spatial hash) + Two-Sided Shading Fix
+**Technical challenges:** Cloth-vs-itself collision on the GPU. Built a **uniform spatial hash grid**
+broadphase (atomic bucket append) so each particle only tests its 27 neighbour cells (O(N·avgPerCell),
+not O(N²)), with a **race-free Jacobi-gather repulsion** as the response and graph-friendly ping-pong
+buffers. Confined the only atomics in the project to the broadphase build. Tuned for robustness
+(thickness ≈ spacing so repulsion spheres form a continuous barrier, iterations, substeps) and was
+candid about the limitation: point-particle repulsion isn't continuous collision, so guaranteed
+clip-free contact would need vertex-triangle/edge-edge CCD. Added supporting features (cloth
+orientation, a built-in ground plane, a CPU self-collision debug overlay) to make a clean drop test.
+**Also debugged a subtle two-sided-shading bug:** a face rendering pure black under any light because
+the smooth normals (`Cross(E1,E2)`, right-handed) disagreed with UE's **left-handed winding**, which
+a two-sided material uses to flip the normal — so the visible face was lit with an inward normal.
+**Technologies:** spatial hashing, GPU atomics (`InterlockedAdd`), typed vs structured RDG buffers,
+`AddClearUAVPass`, PBD inequality constraints, two-sided material shading / winding conventions.
+**Implementation:** `ClothBuildGrid.usf` + `ClothSelfCollision.usf`; iteration loop in the dispatcher;
+`EClothOrientation`; ground plane folded into `ClothCollision.usf`; normal fix = `Cross(E2,E1)`.
+
 ## Portfolio Talking Points
 - Built a real-time **GPU cloth simulator from scratch** in UE5 — no Chaos Cloth — demonstrating
   both physics-simulation and rendering-pipeline understanding.
@@ -125,6 +142,10 @@ named passes give per-pass timings for the Jacobi-vs-Gauss-Seidel comparison.
   convergence comparison."
 - "Added real-time strain visualization (per-vertex stretch → color ramp) and GPU profiling
   instrumentation, and diagnosed an RHI-breadcrumb renderer crash from a crash-dump callstack."
+- "Implemented GPU cloth self-collision with a uniform spatial-hash broadphase (atomic bucket append)
+  and a race-free Jacobi repulsion response, reducing pair testing from O(N²) to O(N·avg-per-cell)."
+- "Diagnosed a two-sided shading bug where smooth normals (right-handed cross product) disagreed with
+  Unreal's left-handed winding convention, causing a black face under all lighting."
 
 ## Interview Discussion Points
 - Why PBD/XPBD over mass-spring; why velocity is derived from position deltas (stability).
@@ -137,6 +158,11 @@ named passes give per-pass timings for the Jacobi-vs-Gauss-Seidel comparison.
 - How GPU breadcrumbs/draw-event scopes are tracked on the RHI command list, and why opening one on
   a plugin's standalone RDG builder (run from a render command) imbalances the stack — a concrete
   example of reading a crash callstack to root-cause a renderer assertion.
+- Spatial hashing for GPU broadphase: why atomics are acceptable in the build but the response stays
+  Jacobi/race-free; and why point-particle self-collision can't guarantee clip-free contact the way
+  vertex-triangle/edge-edge CCD can.
+- Coordinate-system handedness and two-sided shading: how a right-handed normal vs. Unreal's
+  left-handed winding silently breaks lit rendering only for two-sided materials.
 - Why fixed timestep matters for deterministic, frame-rate-independent physics.
 - CPU/GPU threading model in UE (game vs render thread, RDG, pooled vs transient buffers).
 - Readback vs zero-copy vertex rendering trade-offs.

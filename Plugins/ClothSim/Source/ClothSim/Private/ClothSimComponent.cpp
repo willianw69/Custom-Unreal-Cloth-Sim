@@ -56,6 +56,12 @@ void UClothSimComponent::BuildTopology()
 		}
 	}
 
+	// The winding sets the front face / normal direction (ComputeGridNormalsTangents
+	// derives normals from this triangle order). The two orientations need opposite
+	// winding so the "outward" normal is sensible: -Y for the vertical curtain, +Z (up)
+	// for the horizontal sheet — otherwise a flat-dropped sheet shows its dark back on top.
+	const bool bHorizontal = (Orientation == EClothOrientation::HorizontalSheet);
+
 	Triangles.Reserve((GridWidth - 1) * (GridHeight - 1) * 6);
 	for (int32 Y = 0; Y < GridHeight - 1; ++Y)
 	{
@@ -66,8 +72,16 @@ void UClothSimComponent::BuildTopology()
 			const uint32 I01 = (Y + 1) * GridWidth + X;
 			const uint32 I11 = (Y + 1) * GridWidth + (X + 1);
 
-			Triangles.Add(I00); Triangles.Add(I01); Triangles.Add(I10);
-			Triangles.Add(I10); Triangles.Add(I01); Triangles.Add(I11);
+			if (bHorizontal)
+			{
+				Triangles.Add(I00); Triangles.Add(I10); Triangles.Add(I01);
+				Triangles.Add(I10); Triangles.Add(I11); Triangles.Add(I01);
+			}
+			else
+			{
+				Triangles.Add(I00); Triangles.Add(I01); Triangles.Add(I10);
+				Triangles.Add(I10); Triangles.Add(I01); Triangles.Add(I11);
+			}
 		}
 	}
 }
@@ -205,12 +219,14 @@ void UClothSimComponent::InitializeSimulation()
 
 	const FTransform& Xform = GetComponentTransform();
 
-	// Grid in the component's local X-Z plane: width along +X, height down -Z.
+	// Grid layout: vertical curtain (X-Z, hangs down -Z) or horizontal sheet (X-Y, drops flat).
 	for (int32 Y = 0; Y < GridHeight; ++Y)
 	{
 		for (int32 X = 0; X < GridWidth; ++X)
 		{
-			const FVector Local(X * Spacing, 0.0f, -Y * Spacing);
+			const FVector Local = (Orientation == EClothOrientation::HorizontalSheet)
+				? FVector(X * Spacing, Y * Spacing, 0.0f)
+				: FVector(X * Spacing, 0.0f, -Y * Spacing);
 			InitialLocalPositions.Add(FVector3f(Local));
 
 			Positions.Add(FVector3f(Xform.TransformPosition(Local)));
@@ -341,6 +357,16 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	Params.bUseDistanceFieldCollision = bUseDistanceFieldCollision;
 	Params.DFThickness                = DistanceFieldThickness;
 
+	// Self-collision (M9).
+	Params.bSelfCollision          = bSelfCollision;
+	Params.SelfThickness           = SelfCollisionScale * Spacing;
+	Params.SelfStiffness           = SelfCollisionStiffness;
+	Params.SelfCollisionIterations = SelfCollisionIterations;
+
+	// Ground plane (M9).
+	Params.bGroundPlane = bGroundPlane;
+	Params.GroundZ      = GroundHeight;
+
 	// Build world-space colliders from the authored slots.
 	const FTransform& Xform = GetComponentTransform();
 	Params.Colliders.Reserve(Colliders.Num());
@@ -394,6 +420,10 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 	if (bDrawColliders)
 	{
 		DrawColliders();
+	}
+	if (bDebugSelfCollision)
+	{
+		DrawSelfCollisionDebug();
 	}
 
 	// M8 stats: solver config + work-per-substep, for the Jacobi-vs-Gauss-Seidel comparison.
@@ -457,6 +487,79 @@ void UClothSimComponent::DrawColliders()
 	}
 }
 
+void UClothSimComponent::DrawSelfCollisionDebug()
+{
+	UWorld* World = GetWorld();
+	if (!World || !RenderResources.IsValid())
+	{
+		return;
+	}
+
+	// Brute-force O(N^2); fine as a debug aid at demo resolutions. Cap to avoid hitching.
+	constexpr int32 kMaxParticlesForDebug = 5000;
+	if (NumParticles > kMaxParticlesForDebug)
+	{
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage((uint64)(UPTRINT)this + 3, 0.0f, FColor::Orange,
+				FString::Printf(TEXT("ClothSim self-collide debug skipped (%d > %d particles)"),
+					NumParticles, kMaxParticlesForDebug));
+		}
+		return;
+	}
+
+	const float Thickness = SelfCollisionScale * Spacing;
+	const float ThicknessSq = Thickness * Thickness;
+
+	FScopeLock Lock(&RenderResources->DebugCopyCS);
+	if (!RenderResources->bHasDebugData || RenderResources->DebugPositions.Num() != NumParticles)
+	{
+		return;
+	}
+	const TArray<FVector3f>& P = RenderResources->DebugPositions; // world space
+
+	int32 ContactCount = 0;
+	for (int32 i = 0; i < NumParticles; ++i)
+	{
+		const int32 Gxi = i % GridWidth;
+		const int32 Gyi = i / GridWidth;
+		bool bInContact = false;
+
+		for (int32 j = 0; j < NumParticles; ++j)
+		{
+			if (j == i)
+			{
+				continue;
+			}
+			// Skip 1-ring grid neighbours (same exclusion as the GPU pass).
+			const int32 Gxj = j % GridWidth;
+			const int32 Gyj = j / GridWidth;
+			if (FMath::Abs(Gxi - Gxj) <= 1 && FMath::Abs(Gyi - Gyj) <= 1)
+			{
+				continue;
+			}
+			if (FVector3f::DistSquared(P[i], P[j]) < ThicknessSq)
+			{
+				bInContact = true;
+				++ContactCount; // counts ordered pairs (each contact ~twice)
+			}
+		}
+
+		if (bInContact)
+		{
+			DrawDebugPoint(World, FVector(P[i]), DebugPointSize * 2.0f, FColor::Red, false, -1.0f, SDPG_World);
+		}
+	}
+
+	if (GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage((uint64)(UPTRINT)this + 3, 0.0f,
+			ContactCount > 0 ? FColor::Red : FColor::Green,
+			FString::Printf(TEXT("ClothSim self-collide: %d contacts (thickness=%.1fcm) %s"),
+				ContactCount, Thickness, bSelfCollision ? TEXT("[solver ON]") : TEXT("[solver OFF]")));
+	}
+}
+
 void UClothSimComponent::ComputeGridNormalsTangents(
 	const TArray<FVector3f>& InPositions,
 	TArray<FVector3f>& OutNormals,
@@ -474,7 +577,11 @@ void UClothSimComponent::ComputeGridNormalsTangents(
 
 		const FVector3f E1 = InPositions[I1] - InPositions[I0];
 		const FVector3f E2 = InPositions[I2] - InPositions[I0];
-		const FVector3f FaceN = FVector3f::CrossProduct(E1, E2);
+		// Cross(E2, E1) (not E1,E2) so the smooth normal agrees with UE's left-handed
+		// front-face winding convention. This is what makes TWO-SIDED materials shade
+		// correctly: the engine flips the normal by VFACE (winding), so our vertex normal
+		// must match that winding or the visible face is lit with an inward normal (black).
+		const FVector3f FaceN = FVector3f::CrossProduct(E2, E1);
 
 		OutNormals[I0] += FaceN;
 		OutNormals[I1] += FaceN;

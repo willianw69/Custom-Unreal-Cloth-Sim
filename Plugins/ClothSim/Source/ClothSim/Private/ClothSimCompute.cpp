@@ -15,6 +15,28 @@
 // Must match [numthreads(...)] in every cloth .usf. Injected as a #define.
 static constexpr uint32 kThreadGroupSize = 64;
 
+// Self-collision hash grid: max particle indices stored per bucket. Injected as MAX_PER_CELL.
+static constexpr uint32 kMaxPerCell = 16;
+
+// Smallest prime >= N, for the spatial-hash table size (reduces modulo clustering).
+static uint32 NextPrime(uint32 N)
+{
+	auto IsPrime = [](uint32 X) -> bool
+	{
+		if (X < 2) return false;
+		if (X % 2 == 0) return X == 2;
+		for (uint32 d = 3; d * d <= X; d += 2)
+		{
+			if (X % d == 0) return false;
+		}
+		return true;
+	};
+	N = FMath::Max(N, 3u);
+	if (N % 2 == 0) ++N;
+	while (!IsPrime(N)) N += 2;
+	return N;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Shader bindings: Predict -> SolveDistance (xN) -> Finalize
 //////////////////////////////////////////////////////////////////////////
@@ -110,6 +132,68 @@ public:
 	}
 };
 
+// Self-collision broadphase build: bin particles into a spatial hash grid (M9).
+class FClothBuildGridCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FClothBuildGridCS);
+	SHADER_USE_PARAMETER_STRUCT(FClothBuildGridCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float3>, PredictedIn)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, CellCounts)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, CellParticles)
+		SHADER_PARAMETER(uint32, NumParticles)
+		SHADER_PARAMETER(uint32, TableSize)
+		SHADER_PARAMETER(float, CellSize)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), kThreadGroupSize);
+		OutEnvironment.SetDefine(TEXT("MAX_PER_CELL"), kMaxPerCell);
+	}
+};
+
+// Self-collision response: scan the 27 neighbour cells, repel close non-adjacent particles (M9).
+class FClothSelfCollisionCS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FClothSelfCollisionCS);
+	SHADER_USE_PARAMETER_STRUCT(FClothSelfCollisionCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float3>, PredictedIn)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float>, InvMasses)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, CellCounts)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, CellParticles)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float3>, PredictedOut)
+		SHADER_PARAMETER(uint32, NumParticles)
+		SHADER_PARAMETER(uint32, GridWidth)
+		SHADER_PARAMETER(uint32, GridHeight)
+		SHADER_PARAMETER(uint32, TableSize)
+		SHADER_PARAMETER(float, CellSize)
+		SHADER_PARAMETER(float, Thickness)
+		SHADER_PARAMETER(float, SelfStiffness)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), kThreadGroupSize);
+		OutEnvironment.SetDefine(TEXT("MAX_PER_CELL"), kMaxPerCell);
+	}
+};
+
 class FClothFinalizeCS : public FGlobalShader
 {
 public:
@@ -150,6 +234,9 @@ public:
 		SHADER_PARAMETER(uint32, NumParticles)
 		SHADER_PARAMETER(uint32, NumColliders)
 		SHADER_PARAMETER(float, ContactOffset)
+		SHADER_PARAMETER(uint32, EnableGround)
+		SHADER_PARAMETER(float, GroundZ)
+		SHADER_PARAMETER(float, GroundFriction)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -200,6 +287,8 @@ IMPLEMENT_GLOBAL_SHADER(FClothCollisionCS,      "/ClothSim/Private/ClothCollisio
 IMPLEMENT_GLOBAL_SHADER(FClothCollisionDFCS,    "/ClothSim/Private/ClothCollisionDF.usf",    "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothSolveDistanceCS,  "/ClothSim/Private/ClothSolveDistance.usf",  "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothSolveGaussSeidelCS,"/ClothSim/Private/ClothSolveGaussSeidel.usf","MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FClothBuildGridCS,      "/ClothSim/Private/ClothBuildGrid.usf",      "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FClothSelfCollisionCS,  "/ClothSim/Private/ClothSelfCollision.usf",  "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClothFinalizeCS,       "/ClothSim/Private/ClothFinalize.usf",       "MainCS", SF_Compute);
 
 //////////////////////////////////////////////////////////////////////////
@@ -323,7 +412,9 @@ void ClothSimCompute::Dispatch_RenderThread(
 	const float SubDt      = Params.DeltaTime / (float)Substeps;
 	const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(Num, kThreadGroupSize);
 
-	// Colliders are constant within a frame; build the buffer once.
+	// Colliders are constant within a frame; build the buffer once. The collision pass
+	// also handles the optional ground plane, so we still need a (dummy) collider buffer
+	// bound when there are no analytic colliders but the ground plane is enabled.
 	const int32 NumColliders = Params.Colliders.Num();
 	FRDGBufferSRVRef CollidersSRV = nullptr;
 	if (NumColliders > 0)
@@ -332,6 +423,14 @@ void ClothSimCompute::Dispatch_RenderThread(
 			GraphBuilder, TEXT("Cloth.Colliders"),
 			sizeof(FGPUCollider), NumColliders,
 			Params.Colliders.GetData(), sizeof(FGPUCollider) * NumColliders);
+		CollidersSRV = GraphBuilder.CreateSRV(CollidersBuf);
+	}
+	else if (Params.bGroundPlane)
+	{
+		const FGPUCollider Dummy; // never read: NumColliders is passed as 0
+		FRDGBufferRef CollidersBuf = CreateStructuredBuffer(
+			GraphBuilder, TEXT("Cloth.CollidersDummy"),
+			sizeof(FGPUCollider), 1, &Dummy, sizeof(FGPUCollider));
 		CollidersSRV = GraphBuilder.CreateSRV(CollidersBuf);
 	}
 
@@ -358,9 +457,14 @@ void ClothSimCompute::Dispatch_RenderThread(
 	TShaderMapRef<FClothPredictCS>          PredictCS(ShaderMap);
 	TShaderMapRef<FClothSolveDistanceCS>    SolveCS(ShaderMap);
 	TShaderMapRef<FClothSolveGaussSeidelCS> GaussSeidelCS(ShaderMap);
+	TShaderMapRef<FClothBuildGridCS>        BuildGridCS(ShaderMap);
+	TShaderMapRef<FClothSelfCollisionCS>    SelfCollisionCS(ShaderMap);
 	TShaderMapRef<FClothCollisionCS>        CollisionCS(ShaderMap);
 	TShaderMapRef<FClothCollisionDFCS>      CollisionDFCS(ShaderMap);
 	TShaderMapRef<FClothFinalizeCS>         FinalizeCS(ShaderMap);
+
+	// Self-collision hash-grid sizing (M9). Constant for the frame.
+	const uint32 SelfTableSize = NextPrime(2u * (uint32)Num);
 
 	if (SubDt > 0.0f)
 	{
@@ -451,6 +555,69 @@ void ClothSimCompute::Dispatch_RenderThread(
 				// After the loop, `In` holds the latest solved positions.
 			}
 
+			// --- Self-collision: spatial hash broadphase + Jacobi repulsion (M9) ---
+			// Runs before external colliders so a solid collider still gets the final say.
+			// Ping-pongs In -> Other so the gather reads a clean snapshot (race-free).
+			if (Params.bSelfCollision && Params.SelfThickness > 0.0f)
+			{
+				// Iterate to resolve deeper stacks (each iter rebuilds the grid from the
+				// latest positions, then does one Jacobi repulsion pass). More iterations =
+				// firmer separation but more cost.
+				const int32 SelfIters = FMath::Max(1, Params.SelfCollisionIterations);
+				for (int32 SIt = 0; SIt < SelfIters; ++SIt)
+				{
+					FRDGBufferRef Other = (In == PredictedA) ? PredictedB : PredictedA;
+
+					// CellCounts is a TYPED uint buffer (clean ClearUAV + atomics); CellParticles
+					// is a plain structured index list (never cleared, written by slot).
+					const FRDGBufferDesc CountsDesc   = FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), SelfTableSize);
+					const FRDGBufferDesc ParticleDesc = FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), SelfTableSize * kMaxPerCell);
+					FRDGBufferRef CellCounts    = GraphBuilder.CreateBuffer(CountsDesc,   TEXT("Cloth.SelfCellCounts"));
+					FRDGBufferRef CellParticles = GraphBuilder.CreateBuffer(ParticleDesc, TEXT("Cloth.SelfCellParticles"));
+
+					FRDGBufferUAVRef CellCountsUAV = GraphBuilder.CreateUAV(CellCounts, PF_R32_UINT);
+					AddClearUAVPass(GraphBuilder, CellCountsUAV, 0u);
+
+					// Build: bin particles into the hash grid.
+					{
+						FClothBuildGridCS::FParameters* P = GraphBuilder.AllocParameters<FClothBuildGridCS::FParameters>();
+						P->PredictedIn   = GraphBuilder.CreateSRV(In);
+						P->CellCounts    = CellCountsUAV;
+						P->CellParticles = GraphBuilder.CreateUAV(CellParticles);
+						P->NumParticles  = (uint32)Num;
+						P->TableSize     = SelfTableSize;
+						P->CellSize      = Params.SelfThickness;
+
+						FComputeShaderUtils::AddPass(GraphBuilder,
+							RDG_EVENT_NAME("ClothBuildGrid (substep %d iter %d)", Step, SIt),
+							BuildGridCS, P, GroupCount);
+					}
+
+					// Respond: repel close non-adjacent particles, writing the other buffer.
+					{
+						FClothSelfCollisionCS::FParameters* P = GraphBuilder.AllocParameters<FClothSelfCollisionCS::FParameters>();
+						P->PredictedIn   = GraphBuilder.CreateSRV(In);
+						P->InvMasses     = InvMassesSRV;
+						P->CellCounts    = GraphBuilder.CreateSRV(CellCounts, PF_R32_UINT);
+						P->CellParticles = GraphBuilder.CreateSRV(CellParticles);
+						P->PredictedOut  = GraphBuilder.CreateUAV(Other);
+						P->NumParticles  = (uint32)Num;
+						P->GridWidth     = (uint32)Params.GridWidth;
+						P->GridHeight    = (uint32)Params.GridHeight;
+						P->TableSize     = SelfTableSize;
+						P->CellSize      = Params.SelfThickness;
+						P->Thickness     = Params.SelfThickness;
+						P->SelfStiffness = Params.SelfStiffness;
+
+						FComputeShaderUtils::AddPass(GraphBuilder,
+							RDG_EVENT_NAME("ClothSelfCollision (substep %d iter %d)", Step, SIt),
+							SelfCollisionCS, P, GroupCount);
+					}
+
+					In = Other; // corrected positions feed the next iteration
+				}
+			}
+
 			// --- Collision: project predicted positions out of colliders + friction ---
 			if (CollidersSRV)
 			{
@@ -462,6 +629,9 @@ void ClothSimCompute::Dispatch_RenderThread(
 				P->NumParticles       = (uint32)Num;
 				P->NumColliders       = (uint32)NumColliders;
 				P->ContactOffset      = 1.0f; // cm skin so cloth rests just off the surface
+				P->EnableGround       = Params.bGroundPlane ? 1u : 0u;
+				P->GroundZ            = Params.GroundZ;
+				P->GroundFriction     = Params.Friction;
 
 				FComputeShaderUtils::AddPass(GraphBuilder,
 					RDG_EVENT_NAME("ClothCollision (substep %d)", Step),

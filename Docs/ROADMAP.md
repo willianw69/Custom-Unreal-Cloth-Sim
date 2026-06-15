@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Project progress tracker. ✅ Completed · 🔄 In Progress · ⏳ Planned
-> Last updated: 2026-06-15 (after M8).
+> Last updated: 2026-06-15 (after M9).
 
 | Milestone | Title | Status |
 |---|---|---|
@@ -13,7 +13,9 @@
 | M6 | Distance Field Mesh Collision | ✅ |
 | M7 | Colored Gauss-Seidel + Bending | ✅ |
 | M8 | Debug Viz Polish + Profiling | ✅ |
+| M9 | Self-Collision (spatial hash) + drop-test support | ✅ |
 | M+ | Zero-copy GPU Rendering Path | ⏳ (stretch) |
+| M+ | Continuous self-collision (vertex-triangle / edge-edge CCD) | ⏳ (stretch) |
 
 (M6 was reassigned from the originally-planned solver upgrade to distance-field collision at the
 user's request; the Gauss-Seidel + bending work is now M7.)
@@ -66,6 +68,18 @@ visible in `ProfileGPU`/RenderDoc/Insights. (A dedicated `stat GPU` scope was at
 — RHI breadcrumb scopes are unsafe on this plugin's standalone RDG builder; see DEVLOG.)
 Interactive captures + the resolution-vs-ms graph are left to the user with the hooks now in place.
 
+### M9 — Self-Collision (spatial hash) + drop-test support ✅
+GPU cloth self-collision: `ClothBuildGrid.usf` bins particles into a uniform spatial hash grid
+(atomic bucket append), `ClothSelfCollision.usf` repels close non-adjacent particles via a race-free
+Jacobi gather, looped `SelfCollisionIterations`/substep. Plus supporting features: cloth `Orientation`
+(vertical curtain / horizontal sheet), a built-in ground plane (`bGroundPlane`/`GroundHeight`), a CPU
+self-collision debug overlay, and a fix to the smooth-normal handedness so two-sided materials shade
+both faces correctly (`Cross(E2,E1)` to match UE's left-handed winding).
+
 ### M+ — Zero-copy GPU Rendering Path ⏳ (stretch)
 Replace the readback-based mesh update with compute writing directly into UAV vertex buffers
 (custom vertex factory / vertex pulling). Purest "GPU all the way" portfolio result.
+
+### M+ — Continuous self-collision (CCD) ⏳ (stretch)
+Vertex-triangle + edge-edge continuous collision for guaranteed clip-free contact, beyond the M9
+point-particle repulsion.

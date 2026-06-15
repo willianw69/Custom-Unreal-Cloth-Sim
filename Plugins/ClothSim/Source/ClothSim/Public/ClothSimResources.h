@@ -84,6 +84,16 @@ struct FClothSimParams
 	// Distance-field collision (M6) — collide against any scene mesh via the GDF.
 	bool    bUseDistanceFieldCollision = false;
 	float   DFThickness = 2.0f; // contact shell thickness (cm)
+
+	// Self-collision (M9) — cloth vs itself via a spatial hash grid.
+	bool    bSelfCollision = false;
+	float   SelfThickness = 5.0f;  // min separation between non-adjacent particles (cm)
+	float   SelfStiffness = 1.0f;  // [0,1] repulsion strength
+	int32   SelfCollisionIterations = 2; // repulsion passes per substep (deeper stacks)
+
+	// Built-in ground plane (M9) — infinite floor at world Z = GroundZ (normal +Z).
+	bool    bGroundPlane = false;
+	float   GroundZ = 0.0f;
 };
 
 /**

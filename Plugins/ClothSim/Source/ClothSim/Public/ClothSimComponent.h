@@ -19,6 +19,16 @@ enum class EClothColliderType : uint8
 	Capsule
 };
 
+/** Initial layout of the cloth grid (M9). */
+UENUM(BlueprintType)
+enum class EClothOrientation : uint8
+{
+	/** Vertical sheet in the X-Z plane (hangs down like a curtain). */
+	VerticalCurtain	UMETA(DisplayName = "Vertical curtain (X-Z)"),
+	/** Horizontal sheet in the X-Y plane (drops flat onto the ground). */
+	HorizontalSheet	UMETA(DisplayName = "Horizontal sheet (X-Y)")
+};
+
 /** Which GPU distance solver to run (M7). */
 UENUM(BlueprintType)
 enum class EClothSolverMode : uint8
@@ -92,6 +102,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Grid", meta = (ClampMin = "0.1"))
 	float Spacing = 5.0f;
 
+	/** Initial cloth layout. Vertical = curtain (hangs); Horizontal = sheet (drops flat). Built at BeginPlay. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Grid")
+	EClothOrientation Orientation = EClothOrientation::VerticalCurtain;
+
 	/** Pin the two top corners so the cloth hangs (M1 sanity check). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ClothSim|Grid")
 	bool bPinTopCorners = true;
@@ -147,6 +161,39 @@ public:
 	/** Contact shell thickness for distance-field collision (cm). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.0"))
 	float DistanceFieldThickness = 2.0f;
+
+	/**
+	 * Cloth-vs-itself collision via a GPU spatial hash grid (M9). Stops folded/draped
+	 * layers from interpenetrating. Costs a broadphase build + a neighbour-scan pass per substep.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision")
+	bool bSelfCollision = false;
+
+	/**
+	 * Self-collision thickness as a fraction of grid Spacing. The min separation kept
+	 * between non-adjacent particles = SelfCollisionScale * Spacing. ~1.0 (≈ one cell)
+	 * makes the per-particle repulsion spheres overlap into a continuous barrier so
+	 * layers can't slip between them. Stays well below 2*Spacing (the nearest non-adjacent
+	 * rest length), so it doesn't fight the distance solver on flat cloth.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.05", ClampMax = "1.5"))
+	float SelfCollisionScale = 1.0f;
+
+	/** Self-collision repulsion strength [0..1]. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SelfCollisionStiffness = 1.0f;
+
+	/** Self-collision repulsion passes per substep. More = firmer separation in deep folds, more cost. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (ClampMin = "1", ClampMax = "8"))
+	int32 SelfCollisionIterations = 2;
+
+	/** Built-in infinite ground plane (normal +Z) so unpinned cloth rests on a flat floor. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision")
+	bool bGroundPlane = false;
+
+	/** World-space Z height of the ground plane (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Collision", meta = (EditCondition = "bGroundPlane"))
+	float GroundHeight = 0.0f;
 
 	/**
 	 * Distance solver method. Jacobi = per-particle neighbour gather (baseline).
@@ -219,6 +266,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Debug")
 	bool bShowStats = false;
 
+	/**
+	 * Debug self-collision: draw a red point on every particle currently within the
+	 * self-collision thickness of a NON-adjacent particle, and report the contact count
+	 * on screen. CPU-side (from the readback) so it confirms the feature is firing even
+	 * when the small separation is hard to see. Capped to modest grids for performance.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Debug")
+	bool bDebugSelfCollision = false;
+
 	//~ UPrimitiveComponent / UMeshComponent interface
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
@@ -261,6 +317,9 @@ private:
 
 	/** Draw wireframe shapes for the authored colliders so they're visible. */
 	void DrawColliders();
+
+	/** CPU debug: mark particles overlapping a non-adjacent particle (self-collision check). */
+	void DrawSelfCollisionDebug();
 
 	int32 NumParticles = 0;
 

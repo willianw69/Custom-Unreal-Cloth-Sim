@@ -247,3 +247,54 @@ small vertex-buffer upload/frame. Negligible at 1024 particles.
 
 **Next:** M+ (stretch) — zero-copy GPU vertex write, or further solver work (XPBD compliance /
 true dihedral bending). Core roadmap (M1–M8) is complete.
+
+---
+
+## 2026-06-15 — M9: Self-Collision (+ drop-test support: orientation, ground plane, two-sided normal fix)
+**What:** Cloth-vs-itself collision on the GPU via a **spatial hash grid** (Teschner-style).
+`ClothBuildGrid.usf` bins particles into a hash table (cell size = collision thickness) using
+`InterlockedAdd` to append indices per bucket; `ClothSelfCollision.usf` has each particle scan the
+27 neighbour cells and repel any **non-adjacent** particle closer than the thickness (Jacobi gather:
+reads a snapshot, writes its own slot → race-free). It ping-pongs `PredictedA/B`, runs after the
+distance solve and before external colliders, and loops `SelfCollisionIterations` times per substep
+(rebuilding the grid each iteration) to clear deeper stacks. Thickness = `SelfCollisionScale·Spacing`.
+Also added, to make self-collision testable and the demo complete:
+- **Cloth Orientation** (`EClothOrientation`: vertical curtain / horizontal sheet) so cloth can be
+  dropped flat instead of only hung.
+- **Built-in ground plane** (`bGroundPlane` + `GroundHeight`) folded into `ClothCollision.usf`
+  (infinite +Z plane + friction) so unpinned cloth rests on a floor without needing a giant
+  sphere/capsule or the GDF.
+- **Self-collision debug** (`bDebugSelfCollision`): CPU overlap check from the readback that draws
+  red points on contacting particles and reports a contact count on screen.
+
+**Why:** Self-collision is the last missing collision type (a folded/draped sheet previously passed
+through itself). The orientation + ground plane make a clean, repeatable drop test possible.
+
+**Problems & solutions:**
+- *Atomics in the broadphase:* binning needs `InterlockedAdd` (the one place the project uses
+  atomics). Confined to the grid build; the collision response stays race-free Jacobi gather.
+  Buckets overflow past `MAX_PER_CELL` (16) drop extras — a documented approximation.
+- *Cleared-counter buffer:* `AddClearUAVPass` + atomics want a **typed** `Buffer<uint>`, so
+  `CellCounts` is typed (PF_R32_UINT) while `CellParticles` stays a structured index list.
+- *Clipping still possible:* point-particle repulsion can't guarantee zero triangle interpenetration
+  (that needs vertex-triangle / edge-edge CCD). Mitigated by raising the default thickness to ≈Spacing
+  (so repulsion spheres overlap into a continuous barrier), stiffness to 1.0, and iterations to 2;
+  more `Substeps` cut tunnelling. Honest limitation, documented as a future CCD milestone.
+- ***Two-sided "dark face" bug (the tricky one):*** after adding the horizontal orientation, one face
+  rendered black and never responded to the sun, in BOTH orientations, with a two-sided material.
+  Root cause: smooth normals were `Cross(E1,E2)` (right-handed), but UE is **left-handed** and a
+  two-sided material flips the vertex normal by **triangle winding** (`effectiveN = isFront ? N : -N`).
+  Our normal disagreed with the winding, so the visible face was shaded with an inward normal → black
+  regardless of light. Invisible with a one-sided material (only the front face is seen), which is why
+  M3–M8 looked fine. Fixed by computing `Cross(E2,E1)` so the smooth normal agrees with UE's winding.
+  Diagnosis path: a normal-line debug draw showed normals "pointing correctly" in world space, and
+  Unlit looked fine + the face stayed black under any sun direction → isolated it to the two-sided
+  VFACE/winding interaction rather than a normal-direction or material error. (Flipping the *winding*
+  earlier did nothing because that flips winding and the derived normal together, preserving their
+  relationship — the relationship was the bug.)
+
+**Performance:** Self-collision adds, per substep, `SelfCollisionIterations × (clear + build + collide)`
+small passes. Trivial at 1024 particles; the grid keeps it ~O(N·avgPerCell) rather than O(N²).
+
+**Next:** M+ (stretch) — zero-copy GPU vertex write; or continuous (vertex-triangle/edge-edge)
+self-collision for guaranteed clip-free contact; or XPBD compliance.

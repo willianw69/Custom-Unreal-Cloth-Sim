@@ -1,7 +1,7 @@
 # PROJECT_STATE.md
 
 > Single source of truth for current project status. Update after every milestone.
-> Last updated: 2026-06-15 (after M8).
+> Last updated: 2026-06-15 (after M9).
 
 ## Project Overview
 Real-time **GPU cloth simulation built from scratch** in **Unreal Engine 5.7**, as a
@@ -14,9 +14,9 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
 - **Engine install:** `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-**M8 — Debug Viz Polish + Profiling: COMPLETE and verified in-editor.**
-Strain visualization (vertex colors + debug points), on-screen solver/constraint stats, and
-per-pass profiling labels. Core roadmap M1–M8 is now complete.
+**M9 — Self-Collision (spatial hash) + drop-test support: COMPLETE and verified in-editor.**
+GPU cloth-vs-itself collision via a uniform spatial hash grid; plus cloth orientation, a built-in
+ground plane, a self-collision debug overlay, and a two-sided-shading normal fix.
 
 ## Completed Milestones
 - **M1 — Particle Simulation.** GPU integration (gravity + damping), structured buffers,
@@ -49,13 +49,22 @@ per-pass profiling labels. Core roadmap M1–M8 is now complete.
   each frame AND to the debug points (`bVisualizeStrain`/`StrainScale`). On-screen stats readout
   (`bShowStats`): solver mode, particle/constraint/color counts, solve dispatches/substep. Per-pass
   `RDG_EVENT_NAME` labels give `ProfileGPU`/RenderDoc/Insights timing per pass.
+- **M9 — Self-Collision (spatial hash) + drop-test support.** Cloth-vs-itself collision:
+  `ClothBuildGrid.usf` bins particles into a uniform spatial hash grid (atomic bucket append),
+  `ClothSelfCollision.usf` repels close **non-adjacent** particles (race-free Jacobi gather), looped
+  `SelfCollisionIterations`×/substep. Thickness = `SelfCollisionScale·Spacing`. Supporting features:
+  cloth `Orientation` (vertical curtain / horizontal sheet), built-in **ground plane**
+  (`bGroundPlane`/`GroundHeight`, folded into `ClothCollision.usf`), a CPU **self-collision debug**
+  overlay, and a **two-sided-shading fix** (smooth normal = `Cross(E2,E1)` to match UE's left-handed
+  winding so both faces light).
 
 ## In-Progress Work
-- None. Core roadmap (M1–M8) complete; remaining items are stretch goals (see below).
+- None. M1–M9 complete; remaining items are stretch goals (see below).
 
 ## Next Milestone
-**M+ (stretch) — Zero-copy GPU rendering path**, and/or further solver work (XPBD compliance,
-true dihedral bending). The functional roadmap is complete; these are polish/depth upgrades.
+**M+ (stretch)** — Zero-copy GPU rendering path; continuous (vertex-triangle/edge-edge) self-collision
+for guaranteed clip-free contact; or XPBD compliance / true dihedral bending. The functional project
+is complete; these are depth/polish upgrades.
 
 ## Technical Decisions
 - **Wind model:** normal-dependent aerodynamic drag computed in the Predict pass; per-particle
@@ -77,6 +86,16 @@ true dihedral bending). The functional roadmap is complete; these are polish/dep
   Gauss-Seidel ordering. No under-relaxation needed → faster convergence.
 - **Bending:** distance constraint to the 2-away neighbour (rest = 2·Spacing), with a relative
   `BendStiffness` baked per constraint and scaled by the global `Stiffness` uniform. GS path only.
+- **Self-collision:** uniform **spatial hash grid** broadphase (`InterlockedAdd` bucket append — the
+  only atomics in the project, confined to the build) + **race-free Jacobi-gather repulsion** that
+  skips the 1-ring grid neighbours so it never fights the distance solver. Point-particle repulsion,
+  not continuous collision — robust for drapes/folds with thickness≈Spacing + a few iterations +
+  enough substeps, but not guaranteed clip-free (CCD is a future milestone).
+- **Ground plane:** an infinite +Z plane folded into `ClothCollision.usf` (the pass runs whenever
+  there are colliders OR the ground is enabled; a dummy collider buffer is bound when ground-only).
+- **Rendering normals:** smooth normals use `Cross(E2,E1)` so they agree with UE's **left-handed
+  front-face winding**; required for **two-sided** materials, which flip the normal by winding
+  (VFACE). With the wrong handedness the visible face shades black under all lights.
 - **Debug/profiling:** strain colors computed on the CPU from the position readback (reusing the
   data we already copy back) and pushed to the mesh's vertex-color buffer + debug points.
   Profiling visibility comes from per-pass `RDG_EVENT_NAME` labels (`ProfileGPU`/RenderDoc/Insights),
@@ -97,8 +116,9 @@ true dihedral bending). The functional roadmap is complete; these are polish/dep
   soft/approximate on thin or small objects (great for large meshes).
 
 ## Known Limitations
-- Collision is against authored sphere/capsule slots only (no floor/world geometry, no
-  self-collision). Floor = add a large sphere/capsule for now.
+- Collision types: analytic sphere/capsule slots, distance-field (any scene mesh), a built-in ground
+  plane, and **self-collision** (M9). Self-collision is point-particle repulsion, so it is robust but
+  not guaranteed clip-free under fast motion / very tight folds (continuous CCD is a stretch goal).
 - Bending constraints exist in the Gauss-Seidel path only; the Jacobi gather is structural+shear.
 - The **Jacobi** solver assumes a **regular grid** (neighbours from grid coords); the Gauss-Seidel
   path uses an explicit constraint buffer and is not grid-bound, but the constraints are still

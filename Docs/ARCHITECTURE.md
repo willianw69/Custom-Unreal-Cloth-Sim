@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 
 > Technical system documentation. Update whenever the architecture changes.
-> Last updated: 2026-06-15 (after M8).
+> Last updated: 2026-06-15 (after M9).
 
 ## High-Level Architecture
 
@@ -44,9 +44,15 @@
      per color. Within a color no constraint shares a particle (disjoint writes → race-free); RDG
      serializes color N+1 after N so later colors see earlier corrections — true Gauss-Seidel, no
      under-relaxation, faster convergence. Includes bending constraints (2-away, rest=`2·Spacing`).
-3. **Collision** (`ClothCollision.usf`, if any colliders): in place on the solved predicted
+2b. **Self-collision** (`ClothBuildGrid.usf` + `ClothSelfCollision.usf`, if enabled, ×
+   `SelfCollisionIterations`): bin particles into a uniform spatial hash grid (atomic bucket append),
+   then each particle scans its 27 neighbour cells and repels any **non-adjacent** particle closer
+   than the thickness (Jacobi gather → ping-pong `PredictedA/B`, race-free). Runs before external
+   colliders. Skips the 1-ring grid neighbours so it doesn't fight the distance constraints.
+3. **Collision** (`ClothCollision.usf`, if any colliders OR the ground plane): in place on the solved predicted
    buffer, push each penetrating particle out to the collider surface (capsule = segment+radius;
-   sphere = degenerate), then damp the tangential part of its motion for friction.
+   sphere = degenerate), then damp the tangential part of its motion for friction. Also projects
+   particles above an optional infinite **ground plane** (normal +Z at `GroundZ`) with friction.
 3b. **Distance-field collision** (`ClothCollisionDF.usf`, if enabled + GDF available): sample the
    Global Distance Field at each particle and push out along the gradient — collides with any
    scene mesh. Binds the standalone GDF params + a snapshotted View uniform buffer.
@@ -64,6 +70,19 @@ Built once on the game thread in `UClothSimComponent::BuildConstraints`:
    `FClothColorRange` per color. Buffer + ranges are uploaded/stored on `FClothRenderResources` at
    init; the dispatcher walks the ranges every substep. `StiffScale` is 1 for structural/shear and
    `BendStiffness` for bending, multiplied by the global `Stiffness` uniform (clamped) in the shader.
+
+### Self-collision spatial hash (M9)
+Each substep (×`SelfCollisionIterations`), built fresh from the latest predicted positions:
+1. **Build** (`ClothBuildGrid.usf`): cell = `floor(P / thickness)`, hashed (Teschner
+   `73856093/19349663/83492791`) into a `TableSize`-bucket table (`TableSize` = next prime ≥ 2N).
+   Each particle claims a slot with `InterlockedAdd(CellCounts[h])` and writes its index into
+   `CellParticles[h*MaxPerCell + slot]` (overflow past `MaxPerCell`=16 dropped). `CellCounts` is a
+   typed `Buffer<uint>` (clean `AddClearUAVPass` + atomics); `CellParticles` is a structured index list.
+2. **Respond** (`ClothSelfCollision.usf`): each particle scans its 27 neighbour cells; for every
+   non-`self`, non-1-ring-neighbour particle within `thickness`, accumulate a mass-weighted
+   repulsion. Reads the input snapshot, writes its own slot in the other ping-pong buffer → race-free.
+Thickness = `SelfCollisionScale·Spacing` (kept < 2·Spacing, the nearest non-adjacent rest length, so
+flat cloth never self-fights). The only atomics in the project live in the build pass.
 
 ### Global Distance Field plumbing (M6)
 The GDF is renderer-owned and only valid during scene rendering, so a minimal
@@ -122,6 +141,8 @@ GraphBuilder.Execute()
 | PredictedA/B | StructuredBuffer<float3> | transient (per frame) | 12 B | Jacobi ping-pong; GS uses only A (in place) |
 | Constraints | StructuredBuffer<FGPUConstraint> | persistent (pooled) | 16 B | idxA,idxB,rest,stiffScale; color-sorted (GS) |
 | Colliders | StructuredBuffer<FCollider> | transient (per frame) | 32 B | A,radius,B,friction |
+| CellCounts | Buffer<uint> (typed) | transient (per self-collide iter) | 4 B | hash bucket particle counts; ClearUAV + atomics |
+| CellParticles | StructuredBuffer<uint> | transient (per self-collide iter) | 4 B | TableSize·MaxPerCell index lists |
 | PositionReadback | FRHIGPUBufferReadback | persistent | — | non-stalling CPU copy |
 
 Render-side vertex buffers (position, tangents, UV, color, index) live in the scene proxy
@@ -138,14 +159,21 @@ via `FStaticMeshVertexBuffers` and are updated by CPU lock+memcpy.
 - `ClothSolveDistance.usf` — distance-constraint relaxation (Jacobi per-particle gather).
 - `ClothSolveGaussSeidel.usf` — one constraint per thread over a color range; projects both
   endpoints in place (graph-colored Gauss-Seidel, structural+shear+bending).
-- `ClothCollision.usf` — project predicted positions out of sphere/capsule colliders + friction.
+- `ClothCollision.usf` — project predicted positions out of sphere/capsule colliders + the optional ground plane + friction.
+- `ClothBuildGrid.usf` — bin particles into the self-collision spatial hash grid (atomic append).
+- `ClothSelfCollision.usf` — repel close non-adjacent particles using the grid (Jacobi gather).
 - `ClothFinalize.usf` — commit positions, derive velocity.
 - (Shader virtual path root `/ClothSim` → `Plugins/ClothSim/Shaders`, mapped at module
   startup in `FClothSimModule::StartupModule`; files referenced as `/ClothSim/Private/...`.)
 
 ## Data Layouts
-- Particle index `i = y * GridWidth + x`. Grid laid out in component-local X-Z plane:
-  width along +X, height down −Z (row 0 = top). Pinned: top corners by default.
+- Particle index `i = y * GridWidth + x`. Grid laid out per `Orientation`: **vertical curtain** in
+  the X-Z plane (width +X, height −Z, row 0 = top) or **horizontal sheet** in the X-Y plane (drops
+  flat). Pinned: top corners by default. The horizontal sheet uses reversed triangle winding so its
+  geometric front faces up.
+- **Normal handedness:** smooth normals are `Cross(E2,E1)` (not `Cross(E1,E2)`) so they agree with
+  Unreal's left-handed front-face winding. Two-sided materials flip the vertex normal by winding
+  (VFACE); a mismatched (right-handed) normal makes the visible face shade black under all lights.
 - `float3` structured buffers use a tight 12-byte stride (matches `FVector3f`). The 16-byte
   alignment trap applies to **constant** buffers, not structured buffers.
 

@@ -34,6 +34,11 @@ uint	NumParticles;
 uint	NumColliders;
 float	ContactOffset;	// small skin thickness so the cloth rests just off the surface
 
+// Optional infinite ground plane (normal +Z) at world height GroundZ (M9 drop-test support).
+uint	EnableGround;
+float	GroundZ;
+float	GroundFriction;	// [0..1] tangential damping on the ground
+
 float3 ClosestPointOnSegment(float3 P, float3 A, float3 B)
 {
 	const float3 AB = B - A;
@@ -80,6 +85,19 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const float3 StepN = dot(Step, N) * N;
 			const float3 StepT = Step - StepN;
 			P -= Col.Friction * StepT;
+		}
+	}
+
+	// Infinite ground plane (normal +Z). Runs after the colliders.
+	if (EnableGround != 0)
+	{
+		const float MinZ = GroundZ + ContactOffset;
+		if (P.z < MinZ)
+		{
+			P.z = MinZ;
+			// Tangential motion is the XY part of this step; damp it for friction.
+			const float2 StepT = P.xy - Prev.xy;
+			P.xy -= GroundFriction * StepT;
 		}
 	}
 
