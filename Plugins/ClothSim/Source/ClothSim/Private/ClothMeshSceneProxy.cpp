@@ -61,7 +61,8 @@ void FClothMeshSceneProxy::UpdateVertices_RenderThread(
 	FRHICommandListBase& RHICmdList,
 	const TArray<FVector3f>& Positions,
 	const TArray<FVector3f>& Normals,
-	const TArray<FVector3f>& Tangents)
+	const TArray<FVector3f>& Tangents,
+	const TArray<FColor>& Colors)
 {
 	const int32 Count = FMath::Min3(Positions.Num(), Normals.Num(), Tangents.Num());
 	if (Count != NumVerts)
@@ -94,6 +95,20 @@ void FClothMeshSceneProxy::UpdateVertices_RenderThread(
 		void* Dst = RHICmdList.LockBuffer(VB.TangentsVertexBuffer.VertexBufferRHI, 0, VB.GetTangentSize(), RLM_WriteOnly);
 		FMemory::Memcpy(Dst, VB.GetTangentData(), VB.GetTangentSize());
 		RHICmdList.UnlockBuffer(VB.TangentsVertexBuffer.VertexBufferRHI);
+	}
+
+	// Upload per-vertex colors (strain visualization). Tightly packed FColor (4 B);
+	// memcpy straight from the source array. Empty array = leave colors as-is.
+	if (Colors.Num() == NumVerts)
+	{
+		FColorVertexBuffer& VB = VertexBuffers.ColorVertexBuffer;
+		if (VB.GetNumVertices() == (uint32)NumVerts && VB.VertexBufferRHI.IsValid())
+		{
+			const uint32 Size = (uint32)NumVerts * sizeof(FColor);
+			void* Dst = RHICmdList.LockBuffer(VB.VertexBufferRHI, 0, Size, RLM_WriteOnly);
+			FMemory::Memcpy(Dst, Colors.GetData(), Size);
+			RHICmdList.UnlockBuffer(VB.VertexBufferRHI);
+		}
 	}
 }
 

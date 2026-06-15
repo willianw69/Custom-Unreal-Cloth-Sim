@@ -2,7 +2,7 @@
 
 > For a new session/engineer to continue immediately. Assume zero prior context.
 > Update after every milestone — always represents the current state.
-> Last updated: 2026-06-15 (after M7).
+> Last updated: 2026-06-15 (after M8).
 
 ## Project Summary
 From-scratch **GPU cloth simulation in UE 5.7** (no Chaos Cloth). Custom compute shaders do
@@ -10,8 +10,8 @@ XPBD/PBD on structured buffers; rendered as a dynamic lit mesh. Portfolio projec
 Host project `ClothSimDemo`, all work in `Plugins/ClothSim`. Engine: `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-M7 (Colored Gauss-Seidel + Bending) complete — builds clean via CLI; in-editor verification
-pending. Next is M8 (Debug Viz Polish + Profiling).
+M8 (Debug Viz Polish + Profiling) complete and verified in-editor. **Core roadmap M1–M8 is done.**
+Remaining work is stretch goals (M+: zero-copy rendering; or deeper solver work).
 
 ## Completed Work
 - M1: GPU integration + structured buffers + RDG + debug points.
@@ -22,6 +22,8 @@ pending. Next is M8 (Debug Viz Polish + Profiling).
 - M6: distance-field collision vs any scene mesh (`ClothCollisionDF.usf` + `FClothSceneViewExtension`).
 - M7: graph-colored Gauss-Seidel solver (`ClothSolveGaussSeidel.usf`) over an explicit, CPU-colored
   constraint buffer + bending constraints; `EClothSolverMode` toggles vs the Jacobi baseline.
+- M8: strain visualization (vertex colors + debug points), on-screen solver/constraint stats, and
+  per-pass GPU profiling labels (`bVisualizeStrain`/`StrainScale`/`bShowStats`).
 
 ## Current Technical Decisions
 - PBD/XPBD; velocity derived from position delta.
@@ -80,15 +82,29 @@ pending. Next is M8 (Debug Viz Polish + Profiling).
   (e.g. 2–4) the cloth should hold its shape better than Jacobi at the same count. Toggle
   `bUseBending` and fold the cloth to see crease resistance.
 
+## Debug Viz + Profiling Notes (M8)
+- `bVisualizeStrain` (+ `StrainScale`) colors the cloth by membrane stretch (blue=compressed,
+  green=rest, red=stretched). Written to the mesh vertex colors (needs a Vertex Color→BaseColor
+  material to show on the lit surface) AND to the debug points (visible regardless of material).
+- `bShowStats` shows solver mode, particle/constraint/color counts, and solve dispatches/substep.
+- Profiling: use `ProfileGPU` (Ctrl+Shift+,), RenderDoc, or Unreal Insights — the per-pass
+  `RDG_EVENT_NAME`s (`ClothSolveDistance` / `ClothSolveGaussSeidel (… color N)` etc.) are the
+  timing units. **Do NOT** add `RDG_GPU_STAT_SCOPE`/`RDG_EVENT_SCOPE` to `Dispatch_RenderThread`:
+  those push RHI breadcrumbs that are unbalanced on this standalone RDG builder and crash at
+  `Execute()` (breadcrumb-sentinel assertion). Learned the hard way — see DEVLOG 2026-06-15 M8.
+
 ## Immediate Next Task
-**M8 — Debug Viz Polish + Profiling.** Add GPU-resident debug draws (per-particle/per-constraint,
-e.g. strain/stretch coloring), capture `stat GPU` / Unreal Insights timings, and produce a
-**Jacobi vs Gauss-Seidel** comparison (iterations-to-converge and ms/frame) plus a
-resolution-vs-ms graph for the portfolio. All the hooks exist; this is measurement + presentation.
+**Core roadmap (M1–M8) is complete.** Remaining work is optional/stretch:
+- **M+ — Zero-copy GPU rendering:** compute writes UAV vertex buffers directly (custom vertex
+  factory / vertex pulling), removing the readback → CPU → lock+memcpy round trip.
+- **Solver depth:** XPBD compliance per constraint (instead of clamped PBD stiffness); true
+  dihedral bending instead of the 2-away distance approximation.
+- **Portfolio captures:** record the Jacobi-vs-Gauss-Seidel convergence/ms comparison and a
+  resolution-vs-ms graph using the M8 hooks (interactive, in-editor).
 
 ## Recommended Prompt For Future Claude Sessions
 > "Read `Docs/HANDOFF.md`, `Docs/PROJECT_STATE.md`, and `Docs/ARCHITECTURE.md` to load context.
-> This is a from-scratch GPU cloth sim in UE 5.7 (plugin `ClothSim`). M1–M7 are done. Continue
+> This is a from-scratch GPU cloth sim in UE 5.7 (plugin `ClothSim`). M1–M8 are done. Continue
 > with the milestone listed under 'Immediate Next Task', following the workflow in
 > `Docs/` (update PROJECT_STATE, DEVLOG, ROADMAP, HANDOFF, PORTFOLIO_NOTES + commit per
 > milestone). Build via the CLI command in HANDOFF; close the editor first (Live Coding lock)."

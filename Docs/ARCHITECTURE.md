@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 
 > Technical system documentation. Update whenever the architecture changes.
-> Last updated: 2026-06-15 (after M7).
+> Last updated: 2026-06-15 (after M8).
 
 ## High-Level Architecture
 
@@ -79,8 +79,14 @@ The DF shader uses the header's non-material branch, so GDF inputs come from
 - Each frame the component reads the latest world positions from the GPU readback, converts
   to local space, computes **smooth area-weighted normals + tangents** (CPU), and enqueues a
   render-thread update.
-- `FClothMeshSceneProxy::UpdateVertices_RenderThread` writes positions + tangent basis into
-  the `FStaticMeshVertexBuffers` and uploads via `LockBuffer`/`memcpy`.
+- `FClothMeshSceneProxy::UpdateVertices_RenderThread` writes positions + tangent basis (and, when
+  strain visualization is on, per-vertex colors) into the `FStaticMeshVertexBuffers` and uploads via
+  `LockBuffer`/`memcpy`.
+- **Strain viz (M8):** the component computes per-particle membrane strain on the CPU from the
+  position readback (signed deviation of structural-neighbour edge lengths from rest), maps it to a
+  blue→green→red ramp, and passes the colors to the proxy (which uploads the `ColorVertexBuffer`).
+  The same colors tint the debug points. Profiling visibility is via per-pass `RDG_EVENT_NAME`
+  labels — NOT RHI breadcrumb scopes, which crash on this standalone RDG builder.
 - A standard `FLocalVertexFactory` mesh batch is submitted in `GetDynamicMeshElements`, so
   lighting/shadows/material support come for free.
 

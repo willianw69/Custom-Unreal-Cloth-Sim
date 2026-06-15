@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Project progress tracker. ✅ Completed · 🔄 In Progress · ⏳ Planned
-> Last updated: 2026-06-15 (after M7).
+> Last updated: 2026-06-15 (after M8).
 
 | Milestone | Title | Status |
 |---|---|---|
@@ -12,7 +12,7 @@
 | M5 | Sphere & Capsule Collision | ✅ |
 | M6 | Distance Field Mesh Collision | ✅ |
 | M7 | Colored Gauss-Seidel + Bending | ✅ |
-| M8 | Debug Viz Polish + Profiling | ⏳ |
+| M8 | Debug Viz Polish + Profiling | ✅ |
 | M+ | Zero-copy GPU Rendering Path | ⏳ (stretch) |
 
 (M6 was reassigned from the originally-planned solver upgrade to distance-field collision at the
@@ -58,9 +58,13 @@ in place; RDG serializes colors → true Gauss-Seidel). Bending = 2-away distanc
 relative `BendStiffness`. `EClothSolverMode` toggles Jacobi ↔ Gauss-Seidel at runtime; the M2
 Jacobi gather is retained as the baseline for the M8 profiling comparison.
 
-### M8 — Debug Viz Polish + Profiling ⏳
-GPU-resident particle/constraint debug draws (strain coloring), Unreal Insights / `stat GPU`
-captures, resolution-vs-ms graph for the portfolio.
+### M8 — Debug Viz Polish + Profiling ✅
+Strain visualization (per-particle stretch → blue/green/red, on vertex colors + debug points,
+`bVisualizeStrain`/`StrainScale`); on-screen stats readout (`bShowStats`: solver mode,
+particle/constraint/color counts, solve dispatches/substep); per-pass `RDG_EVENT_NAME` profiling
+visible in `ProfileGPU`/RenderDoc/Insights. (A dedicated `stat GPU` scope was attempted but removed
+— RHI breadcrumb scopes are unsafe on this plugin's standalone RDG builder; see DEVLOG.)
+Interactive captures + the resolution-vs-ms graph are left to the user with the hooks now in place.
 
 ### M+ — Zero-copy GPU Rendering Path ⏳ (stretch)
 Replace the readback-based mesh update with compute writing directly into UAV vertex buffers

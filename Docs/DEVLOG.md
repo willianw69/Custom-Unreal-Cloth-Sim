@@ -211,3 +211,39 @@ exactly 2 particles (vs the gather's up-to-8 reads). Negligible at 1024 particle
 iteration-count win is the real lever. Proper `stat GPU` comparison is the M8 profiling pass.
 
 **Next:** M8 — debug-viz polish + profiling (Jacobi vs Gauss-Seidel convergence/ms capture).
+
+---
+
+## 2026-06-15 — M8: Debug Viz Polish + Profiling
+**What:** Added (1) **strain visualization** — per-particle membrane strain (avg deviation of the
+structural-neighbour edge lengths from rest, signed) mapped to a color ramp (blue=compressed,
+green=rest, red=stretched), written both to the mesh's per-vertex **color buffer** (new per-frame
+upload path in `FClothMeshSceneProxy::UpdateVertices_RenderThread`) and to the debug points so it's
+visible with or without a vertex-color material; (2) an **on-screen stats** readout (`bShowStats`):
+solver mode, particle/constraint/color counts, and **solve dispatches/substep** (the headline
+Jacobi-vs-GS cost difference); (3) profiling visibility via the existing per-pass `RDG_EVENT_NAME`
+labels (`ProfileGPU` / RenderDoc / Insights show every `ClothSolveDistance` / `ClothSolveGaussSeidel`
+pass). New component props: `bVisualizeStrain`, `StrainScale`, `bShowStats`.
+
+**Why:** Make the simulation legible — strain coloring shows *where* the cloth is under tension
+(great portfolio visual + a debugging aid), and the stats/profiling expose the M7 solver trade-off
+quantitatively.
+
+**Problems & solutions:**
+- *Editor crash on Play (RHI breadcrumb assertion `LocalCurrentBreadcrumb == Sentinel`,
+  RenderGraphBuilder.cpp:1761).* Root cause: I wrapped the dispatch in `RDG_GPU_STAT_SCOPE` +
+  `RDG_EVENT_SCOPE` to get a `stat GPU` "ClothSim" line, but those push **RHI breadcrumbs**, and
+  this plugin runs its own `FRDGBuilder` on the **immediate command list inside an enqueued render
+  command** — outside the renderer's managed breadcrumb scope — so the breadcrumb stack was
+  unbalanced at `Execute()`. **Fix:** removed both scope macros; kept the per-pass `RDG_EVENT_NAME`
+  labels (crash-safe, still profiler-visible). Lesson: don't open RHI breadcrumb scopes on a
+  standalone RDG builder driven from a render command; rely on per-pass event names instead.
+- *Vertex color buffer update:* the proxy already created a `ColorVertexBuffer` (init from
+  `FDynamicMeshVertex.Color`) but never updated it. Added a `LockBuffer`+`memcpy` of a tightly
+  packed `FColor` array (same pattern as the position buffer), guarded on a vertex-count match.
+
+**Performance:** Strain is CPU-side, O(particles) over the readback we already consume; one extra
+small vertex-buffer upload/frame. Negligible at 1024 particles.
+
+**Next:** M+ (stretch) — zero-copy GPU vertex write, or further solver work (XPBD compliance /
+true dihedral bending). Core roadmap (M1–M8) is complete.

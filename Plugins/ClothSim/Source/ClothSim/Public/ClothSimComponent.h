@@ -202,6 +202,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Debug", meta = (ClampMin = "0.5"))
 	float DebugPointSize = 4.0f;
 
+	/**
+	 * Color the cloth by membrane strain (stretch): blue = compressed, green = at rest,
+	 * red = stretched. Written to the mesh's vertex colors AND to the debug points.
+	 * To see it on the lit surface, the assigned material must route Vertex Color into
+	 * Base Color (or Emissive); the debug points show strain regardless of material.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Debug")
+	bool bVisualizeStrain = false;
+
+	/** Strain magnitude that maps to full blue/red (e.g. 0.2 = 20% stretch is fully red). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Debug", meta = (ClampMin = "0.01"))
+	float StrainScale = 0.25f;
+
+	/** Show an on-screen readout of solver mode + particle/constraint/color/dispatch counts. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ClothSim|Debug")
+	bool bShowStats = false;
+
 	//~ UPrimitiveComponent / UMeshComponent interface
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
@@ -231,6 +248,10 @@ private:
 		TArray<FVector3f>& OutNormals,
 		TArray<FVector3f>& OutTangents) const;
 
+	/** Compute a per-particle strain color (blue=compressed, green=rest, red=stretched)
+	 *  from structural-neighbour edge lengths vs the rest Spacing. */
+	void ComputeStrainColors(const TArray<FVector3f>& InPositions, TArray<FColor>& OutColors) const;
+
 	/** Pull the latest readback positions, convert to local space, recompute normals,
 	 *  and push the updated vertices to the scene proxy. */
 	void UpdateMeshFromSimulation();
@@ -257,6 +278,11 @@ private:
 	TArray<FVector3f> LocalPositions;
 	TArray<FVector3f> LocalNormals;
 	TArray<FVector3f> LocalTangents;
+	TArray<FColor>    LocalColors;   // per-vertex strain colors (M8)
+
+	// Constraint stats captured at BeginPlay for the on-screen readout (M8).
+	int32 NumConstraintsBuilt = 0;
+	int32 NumColorsBuilt = 0;
 
 	FBoxSphereBounds LocalBounds = FBoxSphereBounds(ForceInit);
 

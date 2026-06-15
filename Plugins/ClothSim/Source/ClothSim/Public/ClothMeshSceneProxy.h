@@ -35,12 +35,14 @@ public:
 
 	SIZE_T GetTypeHash() const override;
 
-	/** Replace positions + tangent basis with new per-vertex data, then upload. */
+	/** Replace positions + tangent basis (and optionally vertex colors) with new
+	 *  per-vertex data, then upload. Pass an empty Colors array to leave colors unchanged. */
 	void UpdateVertices_RenderThread(
 		FRHICommandListBase& RHICmdList,
 		const TArray<FVector3f>& Positions,
 		const TArray<FVector3f>& Normals,
-		const TArray<FVector3f>& Tangents);
+		const TArray<FVector3f>& Tangents,
+		const TArray<FColor>& Colors);
 
 	virtual void GetDynamicMeshElements(
 		const TArray<const FSceneView*>& Views,

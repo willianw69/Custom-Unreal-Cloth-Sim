@@ -80,6 +80,22 @@ color-sorted `FGPUConstraint` buffer + `[Start,Count)` ranges; `ClothSolveGaussS
 both endpoints of each constraint in place; the dispatcher loops `Iterations × Colors`.
 `EClothSolverMode` switches Jacobi ↔ Gauss-Seidel at runtime.
 
+## M8 — Strain Visualization + Profiling
+**Technical challenges:** Making the simulation legible. Computed per-particle **membrane strain**
+(signed deviation of structural-neighbour edge lengths from rest) and mapped it to a color ramp,
+driving both the mesh's per-vertex color buffer (a new per-frame upload path) and the debug points
+so it reads with or without a vertex-color material. Surfaced solver cost with an on-screen stats
+readout and per-pass GPU profiling labels. Also debugged a **renderer crash**: wrapping the
+standalone RDG builder in `RDG_GPU_STAT_SCOPE`/`RDG_EVENT_SCOPE` pushed RHI breadcrumbs that were
+unbalanced at `Execute()` (the builder runs from a render command on the immediate list, outside
+the renderer's managed breadcrumb scope) — diagnosed from the crash callstack and resolved by
+relying on per-pass `RDG_EVENT_NAME` labels instead.
+**Technologies:** `FColorVertexBuffer` dynamic update, color-ramp strain mapping, RDG pass events,
+`ProfileGPU`/RenderDoc/Insights, on-screen debug HUD.
+**Implementation:** `ComputeStrainColors()` (CPU, from the position readback) → vertex colors +
+debug points; `bShowStats` HUD reports solver mode + particle/constraint/color/dispatch counts;
+named passes give per-pass timings for the Jacobi-vs-Gauss-Seidel comparison.
+
 ---
 
 ## Portfolio Talking Points
@@ -107,6 +123,8 @@ both endpoints of each constraint in place; the dispatcher loops `Iterations × 
   guarantees race-free in-place projection per color while RDG serialization preserves Gauss-Seidel
   ordering — plus bending constraints, with the Jacobi solver retained behind a runtime toggle for
   convergence comparison."
+- "Added real-time strain visualization (per-vertex stretch → color ramp) and GPU profiling
+  instrumentation, and diagnosed an RHI-breadcrumb renderer crash from a crash-dump callstack."
 
 ## Interview Discussion Points
 - Why PBD/XPBD over mass-spring; why velocity is derived from position deltas (stability).
@@ -116,6 +134,9 @@ both endpoints of each constraint in place; the dispatcher loops `Iterations × 
   colors).
 - Why bending constraints (2-away distance) are needed and where they sit in the constraint graph;
   per-constraint relative stiffness vs a single global stiffness.
+- How GPU breadcrumbs/draw-event scopes are tracked on the RHI command list, and why opening one on
+  a plugin's standalone RDG builder (run from a render command) imbalances the stack — a concrete
+  example of reading a crash callstack to root-cause a renderer assertion.
 - Why fixed timestep matters for deterministic, frame-rate-independent physics.
 - CPU/GPU threading model in UE (game vs render thread, RDG, pooled vs transient buffers).
 - Readback vs zero-copy vertex rendering trade-offs.

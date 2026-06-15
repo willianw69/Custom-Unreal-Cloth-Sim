@@ -1,7 +1,7 @@
 # PROJECT_STATE.md
 
 > Single source of truth for current project status. Update after every milestone.
-> Last updated: 2026-06-15 (after M7).
+> Last updated: 2026-06-15 (after M8).
 
 ## Project Overview
 Real-time **GPU cloth simulation built from scratch** in **Unreal Engine 5.7**, as a
@@ -14,9 +14,9 @@ are solved on the GPU (XPBD/PBD), and the result is rendered as a dynamic lit me
 - **Engine install:** `E:\Epic Games\UE_5.7`.
 
 ## Current Milestone
-**M7 — Colored Gauss-Seidel + Bending: COMPLETE (builds clean; pending in-editor verification).**
-Explicit constraint buffer + CPU graph coloring drive a parallel Gauss-Seidel solver; bending
-constraints added; Jacobi retained behind a runtime toggle.
+**M8 — Debug Viz Polish + Profiling: COMPLETE and verified in-editor.**
+Strain visualization (vertex colors + debug points), on-screen solver/constraint stats, and
+per-pass profiling labels. Core roadmap M1–M8 is now complete.
 
 ## Completed Milestones
 - **M1 — Particle Simulation.** GPU integration (gravity + damping), structured buffers,
@@ -44,14 +44,18 @@ constraints added; Jacobi retained behind a runtime toggle.
   serializes colors → true Gauss-Seidel ordering, faster convergence than the Jacobi gather).
   Bending = 2-away distance constraint with relative `BendStiffness`. `EClothSolverMode` toggles
   Jacobi ↔ Gauss-Seidel at runtime; Jacobi is kept as the profiling baseline.
+- **M8 — Debug Viz Polish + Profiling.** Strain visualization: per-particle membrane stretch →
+  color ramp (blue=compressed, green=rest, red=stretched), uploaded to the mesh vertex-color buffer
+  each frame AND to the debug points (`bVisualizeStrain`/`StrainScale`). On-screen stats readout
+  (`bShowStats`): solver mode, particle/constraint/color counts, solve dispatches/substep. Per-pass
+  `RDG_EVENT_NAME` labels give `ProfileGPU`/RenderDoc/Insights timing per pass.
 
 ## In-Progress Work
-- None (between milestones).
+- None. Core roadmap (M1–M8) complete; remaining items are stretch goals (see below).
 
 ## Next Milestone
-**M8 — Debug Viz Polish + Profiling.** GPU-resident particle/constraint debug draws (e.g. strain
-coloring), Unreal Insights / `stat GPU` captures, and a Jacobi-vs-Gauss-Seidel
-convergence-and-ms comparison for the portfolio.
+**M+ (stretch) — Zero-copy GPU rendering path**, and/or further solver work (XPBD compliance,
+true dihedral bending). The functional roadmap is complete; these are polish/depth upgrades.
 
 ## Technical Decisions
 - **Wind model:** normal-dependent aerodynamic drag computed in the Predict pass; per-particle
@@ -73,6 +77,12 @@ convergence-and-ms comparison for the portfolio.
   Gauss-Seidel ordering. No under-relaxation needed → faster convergence.
 - **Bending:** distance constraint to the 2-away neighbour (rest = 2·Spacing), with a relative
   `BendStiffness` baked per constraint and scaled by the global `Stiffness` uniform. GS path only.
+- **Debug/profiling:** strain colors computed on the CPU from the position readback (reusing the
+  data we already copy back) and pushed to the mesh's vertex-color buffer + debug points.
+  Profiling visibility comes from per-pass `RDG_EVENT_NAME` labels (`ProfileGPU`/RenderDoc/Insights),
+  NOT from `RDG_GPU_STAT_SCOPE`/`RDG_EVENT_SCOPE` — those open RHI breadcrumbs that are unbalanced
+  on this plugin's standalone `FRDGBuilder` (driven from a render command on the immediate list) and
+  crash at `Execute()`. See DEVLOG 2026-06-15 M8.
 - **Timestep:** fixed-step accumulator (default 1/60 s) → frame-rate independent.
 - **Rendering:** reliable path = `FLocalVertexFactory` updated from a small CPU readback
   (negligible at current vertex counts). Zero-copy GPU vertex write is a planned upgrade.

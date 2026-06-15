@@ -236,6 +236,8 @@ void UClothSimComponent::InitializeSimulation()
 	TArray<FGPUConstraint>   Constraints;
 	TArray<FClothColorRange> ColorRanges;
 	BuildConstraints(Constraints, ColorRanges);
+	NumConstraintsBuilt = Constraints.Num();
+	NumColorsBuilt      = ColorRanges.Num();
 
 	RenderResources = MakeShared<FClothRenderResources>();
 
@@ -394,6 +396,25 @@ void UClothSimComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 		DrawColliders();
 	}
 
+	// M8 stats: solver config + work-per-substep, for the Jacobi-vs-Gauss-Seidel comparison.
+	if (bShowStats && GEngine)
+	{
+		const bool bGS = (SolverMode == EClothSolverMode::GaussSeidel);
+		// Solve dispatches issued per substep (the headline cost difference).
+		const int32 SolveDispatches = bGS ? (SolverIterations * NumColorsBuilt) : SolverIterations;
+
+		GEngine->AddOnScreenDebugMessage(
+			(uint64)(UPTRINT)this + 1, 0.0f, FColor::Cyan,
+			FString::Printf(TEXT("ClothSim [%s]  particles=%d  substeps=%d  iters=%d"),
+				bGS ? TEXT("Gauss-Seidel") : TEXT("Jacobi"),
+				NumParticles, Substeps, SolverIterations));
+
+		GEngine->AddOnScreenDebugMessage(
+			(uint64)(UPTRINT)this + 2, 0.0f, FColor::Cyan,
+			FString::Printf(TEXT("  constraints=%d  colors=%d  bending=%d  solve dispatches/substep=%d"),
+				NumConstraintsBuilt, NumColorsBuilt, bUseBending ? 1 : 0, SolveDispatches));
+	}
+
 	// M6 diagnostic: report whether the Global Distance Field snapshot is reaching us.
 	if (bUseDistanceFieldCollision && GEngine)
 	{
@@ -480,6 +501,55 @@ void UClothSimComponent::ComputeGridNormalsTangents(
 	}
 }
 
+void UClothSimComponent::ComputeStrainColors(
+	const TArray<FVector3f>& InPositions, TArray<FColor>& OutColors) const
+{
+	OutColors.SetNumUninitialized(NumParticles);
+
+	const float Rest = Spacing;
+	const float InvScale = 1.0f / FMath::Max(StrainScale, 0.01f);
+
+	// Color ramp: green at rest, lerp to red when stretched, to blue when compressed.
+	const FLinearColor Rest_C(0.0f, 1.0f, 0.0f);
+	const FLinearColor Stretch_C(1.0f, 0.0f, 0.0f);
+	const FLinearColor Compress_C(0.0f, 0.35f, 1.0f);
+
+	for (int32 Y = 0; Y < GridHeight; ++Y)
+	{
+		for (int32 X = 0; X < GridWidth; ++X)
+		{
+			const int32 i = Y * GridWidth + X;
+
+			// Average signed strain over the existing structural (cardinal) neighbours.
+			float StrainSum = 0.0f;
+			int32 Count = 0;
+			auto Accumulate = [&](int32 Nx, int32 Ny)
+			{
+				if (Nx < 0 || Ny < 0 || Nx >= GridWidth || Ny >= GridHeight)
+				{
+					return;
+				}
+				const int32 j = Ny * GridWidth + Nx;
+				const float Len = (InPositions[i] - InPositions[j]).Size();
+				StrainSum += (Len - Rest) / Rest;
+				++Count;
+			};
+			Accumulate(X - 1, Y);
+			Accumulate(X + 1, Y);
+			Accumulate(X, Y - 1);
+			Accumulate(X, Y + 1);
+
+			const float Strain = (Count > 0) ? (StrainSum / Count) : 0.0f;
+			const float T = FMath::Clamp(Strain * InvScale, -1.0f, 1.0f);
+
+			const FLinearColor C = (T >= 0.0f)
+				? FMath::Lerp(Rest_C, Stretch_C, T)
+				: FMath::Lerp(Rest_C, Compress_C, -T);
+			OutColors[i] = C.ToFColor(/*bSRGB*/ false);
+		}
+	}
+}
+
 void UClothSimComponent::UpdateMeshFromSimulation()
 {
 	FClothMeshSceneProxy* Proxy = static_cast<FClothMeshSceneProxy*>(SceneProxy);
@@ -507,12 +577,22 @@ void UClothSimComponent::UpdateMeshFromSimulation()
 
 	ComputeGridNormalsTangents(LocalPositions, LocalNormals, LocalTangents);
 
+	// Strain colors (M8). Empty array => proxy leaves vertex colors unchanged.
+	if (bVisualizeStrain)
+	{
+		ComputeStrainColors(LocalPositions, LocalColors);
+	}
+	else
+	{
+		LocalColors.Reset();
+	}
+
 	// Hand the new vertex data to the proxy on the render thread.
 	ENQUEUE_RENDER_COMMAND(ClothMeshUpdate)(
-		[Proxy, Positions = LocalPositions, Normals = LocalNormals, Tangents = LocalTangents]
+		[Proxy, Positions = LocalPositions, Normals = LocalNormals, Tangents = LocalTangents, Colors = LocalColors]
 		(FRHICommandListImmediate& RHICmdList)
 		{
-			Proxy->UpdateVertices_RenderThread(RHICmdList, Positions, Normals, Tangents);
+			Proxy->UpdateVertices_RenderThread(RHICmdList, Positions, Normals, Tangents, Colors);
 		});
 }
 
@@ -530,9 +610,14 @@ void UClothSimComponent::DrawDebug()
 		return;
 	}
 
-	for (const FVector3f& P : RenderResources->DebugPositions)
+	// Color by strain when visualizing (LocalColors is refreshed in UpdateMeshFromSimulation
+	// just before this call), otherwise a flat cyan.
+	const bool bUseStrain = bVisualizeStrain && LocalColors.Num() == RenderResources->DebugPositions.Num();
+
+	for (int32 i = 0; i < RenderResources->DebugPositions.Num(); ++i)
 	{
-		DrawDebugPoint(World, FVector(P), DebugPointSize, FColor::Cyan, false, -1.0f, SDPG_World);
+		const FColor Color = bUseStrain ? LocalColors[i] : FColor::Cyan;
+		DrawDebugPoint(World, FVector(RenderResources->DebugPositions[i]), DebugPointSize, Color, false, -1.0f, SDPG_World);
 	}
 }
 
